@@ -54,7 +54,7 @@ class AnalysisParams:
     notch_q: float = 0.0
     lowpass_fc_hz: float = 2.5
     stable_win_s: float = 1200.0
-    stable_hold_s: float = 7200.0
+    stable_hold_s: float = 3600.0
     stable_sigma_max: float = 0.03
     stable_slope_max: float = 0.015
     stable_valid_min: float = 0.9
@@ -714,28 +714,27 @@ def analyze_monitor_data(data: MonitorData, params: AnalysisParams) -> AnalysisR
 
 
 def summary_dict(data: MonitorData, result: AnalysisResult) -> Dict[str, object]:
-    stable_range = None
-    if result.stable_window_idx is not None:
-        a, b = result.stable_window_idx
-        stable_range = {
-            "start_idx": int(a),
-            "end_idx": int(b),
-            "start_s": float(data.t_s[a]),
-            "end_s": float(data.t_s[min(len(data.t_s) - 1, max(a, b - 1))]),
-        }
     return {
         "db_path": data.db_path,
-        "table_name": data.table_name,
-        "row_count": int(data.row_count),
-        "duration_s": float(data.t_s[-1]) if len(data.t_s) else 0.0,
-        "fs_hz": float(result.fs_hz),
-        "valid_ratio": float(result.valid_ratio),
         "mu_ss": result.mu_ss,
         "mu_th": result.mu_th,
         "tlife_s": result.tlife_s,
-        "stable_window": stable_range,
-        "stable_segment_count": int(len(result.stable_segments_idx)),
     }
+
+
+def _summary_value_text(value: Optional[float], digits: int = 4) -> str:
+    if value is None or not np.isfinite(value):
+        return "None"
+    return f"{float(value):.{digits}f}"
+
+
+def _summary_lines(payload: Dict[str, object]) -> List[str]:
+    return [
+        f"数据库路径: {payload['db_path']}",
+        f"μss: {_summary_value_text(payload['mu_ss'])}",
+        f"μth: {_summary_value_text(payload['mu_th'])}",
+        f"tlife: {_summary_value_text(payload['tlife_s'], 3)}",
+    ]
 
 
 class MonitorAnalyzerApp:
@@ -800,7 +799,7 @@ class MonitorAnalyzerApp:
         row = self._add_entry(calc_box, row, "陷波 Q (0=关)", "notch_q", 0.0)
         row = self._add_entry(calc_box, row, "低通截止频率 (Hz)", "lowpass_fc_hz", 2.5)
         row = self._add_entry(calc_box, row, "稳态窗口 Wss (s)", "stable_win_s", 1200.0)
-        row = self._add_entry(calc_box, row, "稳态最短保持 Whold (s)", "stable_hold_s", 7200.0)
+        row = self._add_entry(calc_box, row, "稳态最短保持 Whold (s)", "stable_hold_s", 3600.0)
         row = self._add_entry(calc_box, row, "稳态标准差阈值 σmax", "stable_sigma_max", 0.03)
         row = self._add_entry(calc_box, row, "稳态总漂移阈值 Δμmax", "stable_slope_max", 0.015)
         row = self._add_entry(calc_box, row, "稳态有效比例 qmin", "stable_valid_min", 0.9)
@@ -953,28 +952,7 @@ class MonitorAnalyzerApp:
 
     def _update_summary(self, data: MonitorData, result: AnalysisResult) -> None:
         payload = summary_dict(data, result)
-        lines = [
-            f"数据库: {payload['db_path']}",
-            f"表名: {payload['table_name']}",
-            f"样本数: {payload['row_count']}",
-            f"时长: {payload['duration_s']:.3f} s",
-            f"采样频率: {payload['fs_hz']:.6f} Hz",
-            f"有效样本比例: {payload['valid_ratio'] * 100.0:.3f} %",
-            f"稳定段数: {payload['stable_segment_count']}",
-            f"μss: {payload['mu_ss'] if payload['mu_ss'] is not None else 'None'}",
-            f"μth: {payload['mu_th'] if payload['mu_th'] is not None else 'None'}",
-            f"tlife: {payload['tlife_s'] if payload['tlife_s'] is not None else 'None'}",
-        ]
-
-        stable_window = payload.get("stable_window")
-        if isinstance(stable_window, dict):
-            lines.extend(
-                [
-                    f"稳定段窗口索引: [{stable_window['start_idx']}, {stable_window['end_idx']})",
-                    f"稳定段时间: {stable_window['start_s']:.3f} s -> {stable_window['end_s']:.3f} s",
-                ]
-            )
-
+        lines = _summary_lines(payload)
         self.summary_text.configure(state=tk.NORMAL)
         self.summary_text.delete("1.0", tk.END)
         self.summary_text.insert("1.0", "\n".join(lines))
@@ -1144,7 +1122,7 @@ class MonitorAnalyzerApp:
         row = self._add_entry(calc_box, row, "陷波 Q (0=关)", "notch_q", 0.0)
         row = self._add_entry(calc_box, row, "低通截止频率 (Hz)", "lowpass_fc_hz", 2.5)
         row = self._add_entry(calc_box, row, "稳态窗口 Wss (s)", "stable_win_s", 1200.0)
-        row = self._add_entry(calc_box, row, "稳态最短保持 Whold (s)", "stable_hold_s", 7200.0)
+        row = self._add_entry(calc_box, row, "稳态最短保持 Whold (s)", "stable_hold_s", 3600.0)
         row = self._add_entry(calc_box, row, "稳态标准差阈值 σmax", "stable_sigma_max", 0.03)
         row = self._add_entry(calc_box, row, "稳态总漂移阈值 Δμmax", "stable_slope_max", 0.015)
         row = self._add_entry(calc_box, row, "稳态有效比例 qmin", "stable_valid_min", 0.9)
@@ -1312,28 +1290,7 @@ class MonitorAnalyzerApp:
 
     def _update_summary(self, data: MonitorData, result: AnalysisResult) -> None:
         payload = summary_dict(data, result)
-        lines = [
-            f"数据库: {payload['db_path']}",
-            f"表名: {payload['table_name']}",
-            f"样本数: {payload['row_count']}",
-            f"时长: {payload['duration_s']:.3f} s",
-            f"采样频率: {payload['fs_hz']:.6f} Hz",
-            f"有效样本比例: {payload['valid_ratio'] * 100.0:.3f} %",
-            f"稳定段数: {payload['stable_segment_count']}",
-            f"μss: {payload['mu_ss'] if payload['mu_ss'] is not None else 'None'}",
-            f"μth: {payload['mu_th'] if payload['mu_th'] is not None else 'None'}",
-            f"tlife: {payload['tlife_s'] if payload['tlife_s'] is not None else 'None'}",
-        ]
-
-        stable_window = payload.get("stable_window")
-        if isinstance(stable_window, dict):
-            lines.extend(
-                [
-                    f"稳定段窗口索引: [{stable_window['start_idx']}, {stable_window['end_idx']})",
-                    f"稳定段时间: {stable_window['start_s']:.3f} s -> {stable_window['end_s']:.3f} s",
-                ]
-            )
-
+        lines = _summary_lines(payload)
         self.summary_text.configure(state=tk.NORMAL)
         self.summary_text.delete("1.0", tk.END)
         self.summary_text.insert("1.0", "\n".join(lines))
@@ -1463,7 +1420,7 @@ class MonitorAnalyzerApp:
 
         row = 0
         row = self._add_entry(calc_box, row, "稳态窗口 Wss (s)", "stable_win_s", 1200.0)
-        row = self._add_entry(calc_box, row, "稳态最短保持 Whold (s)", "stable_hold_s", 7200.0)
+        row = self._add_entry(calc_box, row, "稳态最短保持 Whold (s)", "stable_hold_s", 3600.0)
         row = self._add_entry(calc_box, row, "稳态标准差阈值 σmax", "stable_sigma_max", 0.03)
         row = self._add_entry(calc_box, row, "稳态总漂移阈值 Δμmax", "stable_slope_max", 0.015)
         row = self._add_entry(calc_box, row, "稳态有效比例 qmin", "stable_valid_min", 0.9)
@@ -1574,7 +1531,7 @@ class MonitorAnalyzerApp:
 
         self._worker_alive = True
         self.analyze_btn.configure(state=tk.DISABLED)
-        self.status_var.set("正在从数据库提取数据并复现图表，请稍候...")
+        self.status_var.set("正在从数据库提取数据并绘制图表，请稍候...")
         worker = threading.Thread(target=self._analysis_worker, args=(db_path, table_name, params), daemon=True)
         worker.start()
 
@@ -1611,28 +1568,7 @@ class MonitorAnalyzerApp:
 
     def _update_summary(self, data: MonitorData, result: AnalysisResult) -> None:
         payload = summary_dict(data, result)
-        lines = [
-            f"数据库: {payload['db_path']}",
-            f"表名: {payload['table_name']}",
-            f"样本数: {payload['row_count']}",
-            f"时长: {payload['duration_s']:.3f} s",
-            f"采样频率: {payload['fs_hz']:.6f} Hz",
-            f"有效样本比例: {payload['valid_ratio'] * 100.0:.3f} %",
-            f"稳定段数: {payload['stable_segment_count']}",
-            f"μss: {payload['mu_ss'] if payload['mu_ss'] is not None else 'None'}",
-            f"μth: {payload['mu_th'] if payload['mu_th'] is not None else 'None'}",
-            f"tlife: {payload['tlife_s'] if payload['tlife_s'] is not None else 'None'}",
-        ]
-
-        stable_window = payload.get("stable_window")
-        if isinstance(stable_window, dict):
-            lines.extend(
-                [
-                    f"稳定段窗口索引: [{stable_window['start_idx']}, {stable_window['end_idx']})",
-                    f"稳定段时间: {stable_window['start_s']:.3f} s -> {stable_window['end_s']:.3f} s",
-                ]
-            )
-
+        lines = _summary_lines(payload)
         self.summary_text.configure(state=tk.NORMAL)
         self.summary_text.delete("1.0", tk.END)
         self.summary_text.insert("1.0", "\n".join(lines))
