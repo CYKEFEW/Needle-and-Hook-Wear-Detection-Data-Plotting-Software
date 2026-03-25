@@ -1,6 +1,5 @@
 ﻿import argparse
 import json
-import math
 import os
 import queue
 import sqlite3
@@ -28,10 +27,6 @@ DEFAULT_DB_PATH = os.path.join(os.path.dirname(__file__), "data", "needle_hook_w
 
 @dataclass
 class AnalysisParams:
-    theta_deg: float = 100.0
-    tmin_gate_N: float = 0.08
-    ratio_clip_min: float = 0.3
-    ratio_clip_max: float = 8.0
     stable_win_s: float = 1200.0
     stable_hold_s: float = 3600.0
     stable_sigma_max: float = 0.03
@@ -48,10 +43,6 @@ class AnalysisParams:
         if slope < 1e-3:
             slope *= max(1.0, float(self.stable_win_s))
         return AnalysisParams(
-            theta_deg=max(1e-6, float(self.theta_deg)),
-            tmin_gate_N=max(0.0, float(self.tmin_gate_N)),
-            ratio_clip_min=max(1e-9, float(self.ratio_clip_min)),
-            ratio_clip_max=max(max(1e-9, float(self.ratio_clip_min)), float(self.ratio_clip_max)),
             stable_win_s=max(1.0, float(self.stable_win_s)),
             stable_hold_s=max(0.0, float(self.stable_hold_s)),
             stable_sigma_max=max(0.0, float(self.stable_sigma_max)),
@@ -75,15 +66,13 @@ class MonitorData:
     t_low_N: np.ndarray
     t_avg_N: np.ndarray
     f_fric_N: np.ndarray
-    mu: Optional[np.ndarray]
+    mu: np.ndarray
     quality_flag: np.ndarray
 
 
 @dataclass
 class AnalysisResult:
     fs_hz: float
-    mu_raw: np.ndarray
-    mu_hampel: np.ndarray
     mu_eval: np.ndarray
     q_valid: np.ndarray
     stable_segments_idx: List[Tuple[int, int]]
@@ -96,7 +85,6 @@ class AnalysisResult:
     display_t_high: np.ndarray
     display_t_low: np.ndarray
     display_t_avg: np.ndarray
-    display_mu_raw: np.ndarray
     display_mu_eval: np.ndarray
 
 def _downsample_for_plot(x: np.ndarray, y: np.ndarray, max_points: int = 200_000) -> Tuple[np.ndarray, np.ndarray]:
@@ -115,10 +103,6 @@ def _infer_fs_hz(t_s: np.ndarray) -> float:
     if dt.size == 0:
         return 1.0
     return float(1.0 / np.median(dt))
-
-
-def params_fs_hz(t_s: np.ndarray) -> float:
-    return _infer_fs_hz(t_s)
 
 
 def _resolve_fs_hz(t_s: np.ndarray, params: Optional[AnalysisParams] = None) -> float:
@@ -163,18 +147,6 @@ def _find_invalid_run_over_limit(
     return None
 
 
-def _compute_mu_from_tensions(t_high: np.ndarray, t_low: np.ndarray, params: AnalysisParams) -> Tuple[np.ndarray, np.ndarray]:
-    theta = math.radians(params.theta_deg)
-    eps = 1e-9
-    q_gate = (t_high >= params.tmin_gate_N) & (t_low >= params.tmin_gate_N)
-    ratio = (t_high + eps) / (t_low + eps)
-    ratio = np.clip(ratio, params.ratio_clip_min, params.ratio_clip_max)
-    mu = np.log(ratio) / max(theta, 1e-9)
-    mu = np.asarray(mu, dtype=float)
-    mu[~q_gate] = np.nan
-    return mu, q_gate.astype(int)
-
-
 def _clip_stable_segments(
     t_s: np.ndarray,
     stable_segments_idx: Sequence[Tuple[int, int]],
@@ -211,7 +183,7 @@ def _plot_labels(lang: str = "zh") -> Dict[str, str]:
             "th": "T_high",
             "tl": "T_low",
             "ta": "T_avg",
-            "mu_f": "μ (filtered)",
+            "mu_f": "μ",
             "mu_ss": "Baseline μss",
             "mu_th": "Threshold μth",
             "ss": "Stable segments",
@@ -227,7 +199,7 @@ def _plot_labels(lang: str = "zh") -> Dict[str, str]:
         "th": "高张力侧 T_high",
         "tl": "低张力侧 T_low",
         "ta": "平均张力 T_avg",
-        "mu_f": "μ (滤波后)",
+        "mu_f": "μ",
         "mu_ss": "稳定段基线 μss",
         "mu_th": "超限阈值 μth",
         "ss": "连续稳定段",
@@ -511,7 +483,17 @@ def load_monitor_db(db_path: str, table_name: str = "Data") -> MonitorData:
         col_mu = _find_column(actual_columns, ["mu", "mu_filt", "mu_raw"])
         col_qf = _find_column(actual_columns, ["quality_flag", "q_valid", "质量标志"])
 
-        missing = [name for name, col in [("t_s", col_time), ("t_high_N", col_high), ("t_low_N", col_low)] if col is None]
+        missing = [
+            name
+            for name, col in [
+                ("t_s", col_time),
+                ("t_high_N", col_high),
+                ("t_low_N", col_low),
+                ("mu", col_mu),
+                ("quality_flag", col_qf),
+            ]
+            if col is None
+        ]
         if missing:
             raise ValueError("缺少必要列: " + ", ".join(missing))
 
@@ -565,16 +547,8 @@ def load_monitor_db(db_path: str, table_name: str = "Data") -> MonitorData:
         else:
             f_fric_arr = t_high_arr - t_low_arr
 
-        mu_arr: Optional[np.ndarray]
-        if col_mu is not None:
-            mu_arr = np.asarray([np.nan if v is None else v for v in mu_vals], dtype=float)
-        else:
-            mu_arr = None
-
-        if col_qf is not None:
-            qf_arr = np.asarray(qf_vals, dtype=int)
-        else:
-            qf_arr = np.ones_like(t_s_arr, dtype=int)
+        mu_arr = np.asarray([np.nan if v is None else v for v in mu_vals], dtype=float)
+        qf_arr = np.asarray(qf_vals, dtype=int)
 
         return MonitorData(
             db_path=os.path.abspath(db_path),
@@ -608,15 +582,8 @@ def analyze_monitor_data(data: MonitorData, params: AnalysisParams) -> AnalysisR
             f"[{t0:.3f}s, {t1:.3f}s] 持续 {dur_s:.3f}s。已停止绘图。"
         )
 
-    _, q_gate = _compute_mu_from_tensions(data.t_high_N, data.t_low_N, params)
-    if data.mu is not None:
-        mu_eval = np.asarray(data.mu, dtype=float).copy()
-    else:
-        mu_eval, _ = _compute_mu_from_tensions(data.t_high_N, data.t_low_N, params)
-    mu_raw = mu_eval.copy()
-    mu_hampel = mu_eval.copy()
-
-    q_valid = q_from_db & (q_gate != 0) & np.isfinite(mu_eval)
+    mu_eval = np.asarray(data.mu, dtype=float).copy()
+    q_valid = q_from_db & np.isfinite(mu_eval)
 
     stable_idx0, mu_ss0, stable_segs0 = _find_stable_baseline(mu_eval, data.t_s, q_valid.astype(int), params, end_idx=None)
     start_fail_idx0 = int(stable_idx0[1]) if stable_idx0 is not None else 0
@@ -635,13 +602,10 @@ def analyze_monitor_data(data: MonitorData, params: AnalysisParams) -> AnalysisR
     display_t_high = np.asarray(data.t_high_N, dtype=float).copy()
     display_t_low = np.asarray(data.t_low_N, dtype=float).copy()
     display_t_avg = np.asarray(data.t_avg_N, dtype=float).copy()
-    display_mu_raw = mu_raw.copy()
     display_mu_eval = mu_eval.copy()
 
     return AnalysisResult(
         fs_hz=fs_hz,
-        mu_raw=mu_raw,
-        mu_hampel=mu_hampel,
         mu_eval=mu_eval,
         q_valid=q_valid.astype(int),
         stable_segments_idx=stable_segs,
@@ -654,7 +618,6 @@ def analyze_monitor_data(data: MonitorData, params: AnalysisParams) -> AnalysisR
         display_t_high=display_t_high,
         display_t_low=display_t_low,
         display_t_avg=display_t_avg,
-        display_mu_raw=display_mu_raw,
         display_mu_eval=display_mu_eval,
     )
 
