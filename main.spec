@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['needle_hook_monitor_gui.py'],
+    ['needle_hook_data_plot.py'],
     pathex=[],
     binaries=[],
     datas=[],
@@ -23,7 +23,7 @@ exe = EXE(
     a.datas,
     [],
     exclude_binaries=False,
-    name='needle_hook_monitor_gui',
+    name='needle_hook_data_plot',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
