@@ -4,7 +4,7 @@
 
 功能：
 
-- 读取 sqlite 监测库，默认参考 `data/needle_hook_wear_sim.db`
+- 读取 sqlite 监测库，默认参考 `data/needle_hook_wear.db`
 - 绘制张力-时间图
 - 绘制 μ-时间图
 - 按“稳态窗口 + 有效比例 + 波动度 + 漂移量 + 持续超阈值”逻辑计算 `μss / μth / tlife`
@@ -18,5 +18,5 @@ python Draw\needle_hook_data_plot.py
 无界面分析：
 
 ```bash
-python Draw\needle_hook_data_plot.py --headless --db Draw\data\needle_hook_wear_sim.db --table Data
+python Draw\needle_hook_data_plot.py --headless --db Draw\data\needle_hook_wear.db --table Data
 ```

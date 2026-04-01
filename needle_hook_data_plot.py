@@ -22,7 +22,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from matplotlib.figure import Figure
 
 
-DEFAULT_DB_PATH = os.path.join(os.path.dirname(__file__), "data", "needle_hook_wear_sim.db")
+DEFAULT_DB_PATH = os.path.join(os.path.dirname(__file__), "data", "needle_hook_wear.db")
 
 
 @dataclass
