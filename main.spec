@@ -1,12 +1,22 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+local_hiddenimports = [
+    'analysis',
+    'app',
+    'db_io',
+    'models',
+    'optimization',
+    'plotting',
+    'matplotlib.backends.backend_tkagg',
+]
+
 
 a = Analysis(
     ['needle_hook_data_plot.py'],
     pathex=[],
     binaries=[],
-    datas=[],
-    hiddenimports=[],
+    datas=[('database', 'database')],
+    hiddenimports=local_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
