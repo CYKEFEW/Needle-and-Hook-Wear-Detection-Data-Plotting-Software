@@ -26,6 +26,19 @@ def resolve_fs_hz(t_s: np.ndarray, params: Optional[object] = None) -> float:
     return infer_fs_hz(t_s)
 
 
+def interpolate_invalid_samples(values: np.ndarray, valid_mask: np.ndarray) -> np.ndarray:
+    arr = np.asarray(values, dtype=float).copy()
+    valid = np.asarray(valid_mask, dtype=bool) & np.isfinite(arr)
+    if len(arr) == 0 or bool(valid.all()):
+        return arr
+    if not bool(valid.any()):
+        return arr
+    x = np.arange(len(arr))
+    out = arr.copy()
+    out[~valid] = np.interp(x[~valid], x[valid], arr[valid])
+    return out
+
+
 def _find_invalid_run_over_limit(
     valid_flag: np.ndarray,
     t_s: np.ndarray,
@@ -105,25 +118,19 @@ def _find_stable_segments(
         k1 = k0 + win
         if k1 > n:
             break
-        if float(np.mean(q_valid[k0:k1])) < params.stable_valid_min:
-            continue
-
-        seg = mu_f[k0:k1]
-        seg = seg[np.isfinite(seg)]
-        if len(seg) < 10:
-            continue
-        if float(np.std(seg)) > params.stable_sigma_max:
+        q_window = np.asarray(q_valid[k0:k1], dtype=bool)
+        if float(np.mean(q_window)) < params.stable_valid_min:
             continue
 
         yy = mu_f[k0:k1]
-        vv = np.asarray(q_valid[k0:k1], dtype=bool)
-        mm = np.isfinite(yy) & vv
-        if int(mm.sum()) < 10:
-            mm = np.isfinite(yy)
-        if int(mm.sum()) < 10:
+        valid = np.isfinite(yy) & q_window
+        if int(valid.sum()) < 10:
             continue
 
-        vals = yy[mm]
+        vals = yy[valid]
+        if float(np.std(vals)) > params.stable_sigma_max:
+            continue
+
         nvals = int(len(vals))
         edge = max(5, int(round(0.10 * nvals)))
         edge = min(edge, max(5, nvals // 2))
@@ -170,8 +177,6 @@ def _find_stable_baseline(
     yy = mu_f[k0:k1]
     qq = np.asarray(q_valid[k0:k1], dtype=bool)
     mask = np.isfinite(yy) & qq
-    if int(mask.sum()) < 5:
-        mask = np.isfinite(yy)
     if int(mask.sum()) <= 0:
         return (k0, k1), None, segs
     mu_ss = float(np.nanmedian(yy[mask]))
@@ -259,6 +264,9 @@ def analyze_monitor_data(data: MonitorData, params: AnalysisParams) -> AnalysisR
         mu_eval, data.t_s, q_valid.astype(int), mu_ss, params, start_idx=start_fail_idx
     )
 
+    display_t_high = interpolate_invalid_samples(data.t_high_N, q_from_db)
+    display_t_low = interpolate_invalid_samples(data.t_low_N, q_from_db)
+
     return AnalysisResult(
         fs_hz=fs_hz,
         mu_eval=mu_eval,
@@ -270,10 +278,10 @@ def analyze_monitor_data(data: MonitorData, params: AnalysisParams) -> AnalysisR
         tlife_s=None if tlife_s is None else float(tlife_s),
         tlife_idx=tlife_idx,
         valid_ratio=float(np.mean(q_valid)) if len(q_valid) else 0.0,
-        display_t_high=np.asarray(data.t_high_N, dtype=float).copy(),
-        display_t_low=np.asarray(data.t_low_N, dtype=float).copy(),
-        display_t_avg=np.asarray(data.t_avg_N, dtype=float).copy(),
-        display_mu_eval=mu_eval.copy(),
+        display_t_high=display_t_high,
+        display_t_low=display_t_low,
+        display_t_avg=(display_t_high + display_t_low) / 2.0,
+        display_mu_eval=interpolate_invalid_samples(mu_eval, q_from_db),
     )
 
 

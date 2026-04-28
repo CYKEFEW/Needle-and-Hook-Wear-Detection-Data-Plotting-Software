@@ -11,7 +11,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from matplotlib.figure import Figure
 from tkinter import filedialog, messagebox, ttk
 
-from analysis import analyze_monitor_data, summary_dict, summary_lines
+from analysis import analyze_monitor_data, interpolate_invalid_samples, summary_dict, summary_lines
 from db_io import DEFAULT_DB_PATH, export_optimized_db, load_monitor_db
 from models import AnalysisParams, AnalysisResult, MonitorData, OptimizationParams, OptimizedData, PlotOptions
 from optimization import infer_wrap_angle_rad, optimize_monitor_data
@@ -61,10 +61,15 @@ class MonitorAnalyzerApp:
         self.opt_wrap_angle_var = tk.StringVar(value="")
         self.opt_hampel_enabled_var = tk.BooleanVar(value=True)
         self.opt_smooth_enabled_var = tk.BooleanVar(value=True)
+        self.opt_hampel_strength_var = tk.DoubleVar(value=50.0)
+        self.opt_smooth_strength_var = tk.DoubleVar(value=50.0)
+        self.opt_hampel_strength_text_var = tk.StringVar(value="50%")
+        self.opt_smooth_strength_text_var = tk.StringVar(value="50%")
         self.opt_hampel_window_var = tk.StringVar(value="1.0")
         self.opt_hampel_sigma_var = tk.StringVar(value="3.0")
         self.opt_smooth_window_var = tk.StringVar(value="0.5")
         self.opt_sample_rate_var = tk.StringVar(value="0")
+        self.opt_preview_mode_var = tk.StringVar(value="高张力")
         self.opt_status_var = tk.StringVar(value="选择数据库后可反推包角、生成优化预览并导出。")
 
         self._build_ui()
@@ -259,6 +264,30 @@ class MonitorAnalyzerApp:
         ttk.Entry(param_box, textvariable=self.opt_smooth_window_var, width=18).grid(row=5, column=1, sticky="ew", pady=2, padx=(8, 0))
         ttk.Label(param_box, text="采样率 fs (Hz, 0=自动)").grid(row=6, column=0, sticky="w", pady=2)
         ttk.Entry(param_box, textvariable=self.opt_sample_rate_var, width=18).grid(row=6, column=1, sticky="ew", pady=2, padx=(8, 0))
+        ttk.Label(param_box, text="去毛刺力度").grid(row=7, column=0, sticky="w", pady=(8, 2))
+        ttk.Scale(
+            param_box,
+            from_=0,
+            to=100,
+            orient=tk.HORIZONTAL,
+            variable=self.opt_hampel_strength_var,
+            command=lambda _value: self._update_strength_text(
+                self.opt_hampel_strength_var, self.opt_hampel_strength_text_var
+            ),
+        ).grid(row=7, column=1, sticky="ew", pady=(8, 2), padx=(8, 0))
+        ttk.Label(param_box, textvariable=self.opt_hampel_strength_text_var, width=6).grid(row=7, column=2, sticky="e", pady=(8, 2))
+        ttk.Label(param_box, text="平滑力度").grid(row=8, column=0, sticky="w", pady=2)
+        ttk.Scale(
+            param_box,
+            from_=0,
+            to=100,
+            orient=tk.HORIZONTAL,
+            variable=self.opt_smooth_strength_var,
+            command=lambda _value: self._update_strength_text(
+                self.opt_smooth_strength_var, self.opt_smooth_strength_text_var
+            ),
+        ).grid(row=8, column=1, sticky="ew", pady=2, padx=(8, 0))
+        ttk.Label(param_box, textvariable=self.opt_smooth_strength_text_var, width=6).grid(row=8, column=2, sticky="e", pady=2)
         param_box.columnconfigure(1, weight=1)
 
         export_box = ttk.LabelFrame(controls, text="导出", padding=10)
@@ -276,11 +305,21 @@ class MonitorAnalyzerApp:
         status_box.pack(fill=tk.BOTH, expand=True)
         ttk.Label(status_box, textvariable=self.opt_status_var, wraplength=360, justify=tk.LEFT).pack(fill=tk.X)
 
-        self.opt_figure = Figure(figsize=(10.8, 10.4), dpi=100)
-        self.opt_ax_high = self.opt_figure.add_subplot(411)
-        self.opt_ax_low = self.opt_figure.add_subplot(412, sharex=self.opt_ax_high)
-        self.opt_ax_avg = self.opt_figure.add_subplot(413, sharex=self.opt_ax_high)
-        self.opt_ax_mu = self.opt_figure.add_subplot(414, sharex=self.opt_ax_high)
+        preview_switch = ttk.Frame(preview)
+        preview_switch.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(preview_switch, text="预览曲线").pack(side=tk.LEFT)
+        self.opt_preview_selector = ttk.Combobox(
+            preview_switch,
+            textvariable=self.opt_preview_mode_var,
+            values=("高张力", "低张力", "平均张力", "μ"),
+            state="readonly",
+            width=10,
+        )
+        self.opt_preview_selector.pack(side=tk.LEFT, padx=(8, 0))
+        self.opt_preview_selector.bind("<<ComboboxSelected>>", lambda _event: self._refresh_optimization_preview_plot())
+
+        self.opt_figure = Figure(figsize=(10.8, 7.2), dpi=100)
+        self.opt_ax_preview = self.opt_figure.add_subplot(111)
         self.opt_preview_canvas = FigureCanvasTkAgg(self.opt_figure, master=preview)
         self.opt_preview_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         self.opt_toolbar = NavigationToolbar2Tk(self.opt_preview_canvas, preview, pack_toolbar=False)
@@ -296,13 +335,16 @@ class MonitorAnalyzerApp:
         return row + 1
 
     def _add_plot_limit(self, parent: ttk.Widget, row: int, label: str, key: str) -> None:
-        var = tk.StringVar(value="-1")
+        var = tk.StringVar(value="Auto")
         self._plot_limit_vars[key] = var
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=2)
         entry = ttk.Entry(parent, textvariable=var, width=18)
         entry.grid(row=row, column=1, sticky="ew", pady=2, padx=(8, 0))
         entry.bind("<Return>", lambda _event: self._refresh_current_plot())
         entry.bind("<FocusOut>", lambda _event: self._refresh_current_plot())
+
+    def _update_strength_text(self, value_var: tk.Variable, text_var: tk.StringVar) -> None:
+        text_var.set(f"{int(round(float(value_var.get())))}%")
 
     def _browse_db(self) -> None:
         path = filedialog.askopenfilename(title="选择监测数据库", filetypes=[("SQLite DB", "*.db *.sqlite *.sqlite3"), ("所有文件", "*.*")])
@@ -320,9 +362,12 @@ class MonitorAnalyzerApp:
                 self.opt_output_path_var.set(base + "_optimized" + (ext or ".db"))
 
     def _browse_opt_output(self) -> None:
+        default_path = self._default_optimized_output_path()
         path = filedialog.asksaveasfilename(
             title="保存优化后的数据库",
             defaultextension=".db",
+            initialdir=os.path.dirname(default_path),
+            initialfile=os.path.basename(default_path),
             filetypes=[("SQLite DB", "*.db *.sqlite *.sqlite3"), ("所有文件", "*.*")],
         )
         if path:
@@ -346,8 +391,11 @@ class MonitorAnalyzerApp:
         )
 
     def _get_plot_options(self) -> PlotOptions:
-        def f(name: str) -> float:
-            return float(str(self._plot_limit_vars[name].get()).strip())
+        def f(name: str) -> Optional[float]:
+            text = str(self._plot_limit_vars[name].get()).strip()
+            if text == "" or text.lower() == "auto":
+                return None
+            return float(text)
 
         options = PlotOptions(
             tension_y_min=f("tension_y_min"),
@@ -375,6 +423,8 @@ class MonitorAnalyzerApp:
             hampel_sigma=float(self.opt_hampel_sigma_var.get().strip()),
             smooth_window_s=float(self.opt_smooth_window_var.get().strip()),
             sample_rate_hz=float(self.opt_sample_rate_var.get().strip()),
+            hampel_strength_pct=float(self.opt_hampel_strength_var.get()),
+            smooth_strength_pct=float(self.opt_smooth_strength_var.get()),
         ).normalized()
 
     def _current_optimization_signature(self) -> Tuple[str, str]:
@@ -387,6 +437,17 @@ class MonitorAnalyzerApp:
         self._opt_data = None
         self._opt_params = None
         self._opt_signature = None
+
+    def _default_optimized_output_path(self) -> str:
+        source_path = ""
+        if self._opt_source_data is not None:
+            source_path = self._opt_source_data.db_path
+        if not source_path:
+            source_path = self.opt_db_path_var.get().strip() or self.db_path_var.get().strip()
+        if not source_path:
+            source_path = os.path.abspath("optimized.db")
+        base, ext = os.path.splitext(os.path.abspath(source_path))
+        return base + "_optimized" + (ext or ".db")
 
     def _run_analysis_async(self) -> None:
         if self._worker_alive:
@@ -497,6 +558,7 @@ class MonitorAnalyzerApp:
                     self._opt_data = optimized
                     self._opt_params = params
                     self._opt_signature = (os.path.abspath(data.db_path), data.table_name)
+                    self.opt_preview_mode_var.set("高张力")
                     self._draw_optimization_preview(data, optimized)
                     self.opt_status_var.set(
                         f"预览完成: rows={data.row_count} | θ={params.wrap_angle_rad:.12g} rad | "
@@ -555,11 +617,12 @@ class MonitorAnalyzerApp:
             self._run_optimization_preview_async()
             messagebox.showwarning("提示", "请先生成优化预览，确认后再导出。")
             return
+        previous_output_path = self.opt_output_path_var.get().strip()
+        self.opt_output_path_var.set("")
+        self._browse_opt_output()
         output_path = self.opt_output_path_var.get().strip()
         if not output_path:
-            self._browse_opt_output()
-            output_path = self.opt_output_path_var.get().strip()
-        if not output_path:
+            self.opt_output_path_var.set(previous_output_path)
             return
         try:
             params = self._get_optimization_params()
@@ -600,58 +663,53 @@ class MonitorAnalyzerApp:
         self.canvas.draw_idle()
 
     def _draw_optimization_placeholder(self) -> None:
-        for ax, title, ylabel in [
-            (self.opt_ax_high, "优化前/后高张力侧对比", "T_high (N)"),
-            (self.opt_ax_low, "优化前/后低张力侧对比", "T_low (N)"),
-            (self.opt_ax_avg, "优化前/后平均张力对比", "T_avg (N)"),
-            (self.opt_ax_mu, "优化前/后 μ 对比", "μ"),
-        ]:
-            ax.clear()
-            ax.set_title(title)
-            ax.set_ylabel(ylabel)
-        self.opt_ax_mu.set_xlabel("时间 t (s)")
-        self.opt_figure.subplots_adjust(left=0.08, right=0.98, top=0.96, bottom=0.08, hspace=0.52)
+        self.opt_ax_preview.clear()
+        self.opt_ax_preview.set_title("优化前/后高张力侧对比")
+        self.opt_ax_preview.set_ylabel("T_high (N)")
+        self.opt_ax_preview.set_xlabel("时间 t (s)")
+        self.opt_figure.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.10)
         self.opt_preview_canvas.draw_idle()
 
+    def _refresh_optimization_preview_plot(self) -> None:
+        if self._opt_source_data is None or self._opt_data is None:
+            self._draw_optimization_placeholder()
+            return
+        self._draw_optimization_preview(self._opt_source_data, self._opt_data)
+
     def _draw_optimization_preview(self, data: MonitorData, optimized: OptimizedData) -> None:
+        mode = self.opt_preview_mode_var.get().strip() or "高张力"
         max_points = 40000
-        tx, raw_high = downsample_for_plot(data.t_s, data.t_high_N, max_points)
+        q_from_db = np.asarray(data.quality_flag, dtype=int) != 0
+        display_high = interpolate_invalid_samples(data.t_high_N, q_from_db)
+        display_low = interpolate_invalid_samples(data.t_low_N, q_from_db)
+        display_avg = (display_high + display_low) / 2.0
+        display_mu = interpolate_invalid_samples(data.mu, q_from_db)
+
+        tx, raw_high = downsample_for_plot(data.t_s, display_high, max_points)
         _, opt_high = downsample_for_plot(data.t_s, optimized.t_high_N, max_points)
-        _, raw_low = downsample_for_plot(data.t_s, data.t_low_N, max_points)
+        _, raw_low = downsample_for_plot(data.t_s, display_low, max_points)
         _, opt_low = downsample_for_plot(data.t_s, optimized.t_low_N, max_points)
-        _, raw_avg = downsample_for_plot(data.t_s, data.t_avg_N, max_points)
+        _, raw_avg = downsample_for_plot(data.t_s, display_avg, max_points)
         _, opt_avg = downsample_for_plot(data.t_s, optimized.t_avg_N, max_points)
-        _, raw_mu = downsample_for_plot(data.t_s, data.mu, max_points)
+        _, raw_mu = downsample_for_plot(data.t_s, display_mu, max_points)
         _, opt_mu = downsample_for_plot(data.t_s, optimized.mu, max_points)
 
-        for ax in (self.opt_ax_high, self.opt_ax_low, self.opt_ax_avg, self.opt_ax_mu):
-            ax.clear()
-        self.opt_ax_high.plot(tx, raw_high, label="优化前", color="tab:blue", alpha=0.55)
-        self.opt_ax_high.plot(tx, opt_high, label="优化后", color="tab:red", linewidth=1.0)
-        self.opt_ax_high.set_title("优化前/后高张力侧对比")
-        self.opt_ax_high.set_ylabel("T_high (N)")
-        self.opt_ax_high.legend(loc="upper right")
+        series = {
+            "高张力": ("优化前/后高张力侧对比", "T_high (N)", raw_high, opt_high),
+            "低张力": ("优化前/后低张力侧对比", "T_low (N)", raw_low, opt_low),
+            "平均张力": ("优化前/后平均张力对比", "T_avg (N)", raw_avg, opt_avg),
+            "μ": ("优化前/后 μ 对比", "μ", raw_mu, opt_mu),
+        }
+        title, ylabel, raw_y, opt_y = series.get(mode, series["高张力"])
 
-        self.opt_ax_low.plot(tx, raw_low, label="优化前", color="tab:blue", alpha=0.55)
-        self.opt_ax_low.plot(tx, opt_low, label="优化后", color="tab:red", linewidth=1.0)
-        self.opt_ax_low.set_title("优化前/后低张力侧对比")
-        self.opt_ax_low.set_ylabel("T_low (N)")
-        self.opt_ax_low.legend(loc="upper right")
-
-        self.opt_ax_avg.plot(tx, raw_avg, label="优化前", color="tab:blue", alpha=0.55)
-        self.opt_ax_avg.plot(tx, opt_avg, label="优化后", color="tab:red", linewidth=1.0)
-        self.opt_ax_avg.set_title("优化前/后平均张力对比")
-        self.opt_ax_avg.set_ylabel("T_avg (N)")
-        self.opt_ax_avg.legend(loc="upper right")
-
-        self.opt_ax_mu.plot(tx, raw_mu, label="优化前", color="tab:blue", alpha=0.55)
-        self.opt_ax_mu.plot(tx, opt_mu, label="优化后", color="tab:red", linewidth=1.0)
-        self.opt_ax_mu.set_title("优化前/后 μ 对比")
-        self.opt_ax_mu.set_ylabel("μ")
-        self.opt_ax_mu.set_xlabel("时间 t (s)")
-        self.opt_ax_mu.legend(loc="upper right")
-
-        self.opt_figure.subplots_adjust(left=0.08, right=0.98, top=0.96, bottom=0.08, hspace=0.52)
+        self.opt_ax_preview.clear()
+        self.opt_ax_preview.plot(tx, raw_y, label="优化前", color="tab:blue", alpha=0.55)
+        self.opt_ax_preview.plot(tx, opt_y, label="优化后", color="tab:red", linewidth=1.0)
+        self.opt_ax_preview.set_title(title)
+        self.opt_ax_preview.set_ylabel(ylabel)
+        self.opt_ax_preview.set_xlabel("时间 t (s)")
+        self.opt_ax_preview.legend(loc="upper right")
+        self.opt_figure.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.10)
         self.opt_preview_canvas.draw_idle()
 
 

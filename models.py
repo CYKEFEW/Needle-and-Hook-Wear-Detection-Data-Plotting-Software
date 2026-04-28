@@ -69,10 +69,10 @@ class AnalysisResult:
 
 @dataclass
 class PlotOptions:
-    tension_y_min: float = -1.0
-    tension_y_max: float = -1.0
-    mu_y_min: float = -1.0
-    mu_y_max: float = -1.0
+    tension_y_min: Optional[float] = None
+    tension_y_max: Optional[float] = None
+    mu_y_min: Optional[float] = None
+    mu_y_max: Optional[float] = None
     show_mu: bool = True
     show_stable_segments: bool = True
     show_mu_ss: bool = True
@@ -89,6 +89,8 @@ class OptimizationParams:
     hampel_sigma: float = 3.0
     smooth_window_s: float = 0.5
     sample_rate_hz: float = 0.0
+    hampel_strength_pct: float = 50.0
+    smooth_strength_pct: float = 50.0
 
     def normalized(self) -> "OptimizationParams":
         return OptimizationParams(
@@ -99,6 +101,8 @@ class OptimizationParams:
             hampel_sigma=max(0.1, float(self.hampel_sigma)),
             smooth_window_s=max(0.0, float(self.smooth_window_s)),
             sample_rate_hz=max(0.0, float(self.sample_rate_hz)),
+            hampel_strength_pct=min(100.0, max(0.0, float(self.hampel_strength_pct))),
+            smooth_strength_pct=min(100.0, max(0.0, float(self.smooth_strength_pct))),
         )
 
 

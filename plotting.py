@@ -22,48 +22,32 @@ def downsample_for_plot(x: np.ndarray, y: np.ndarray, max_points: int = 200_000)
 
 
 def plot_labels(lang: str = "zh") -> Dict[str, str]:
-    if str(lang).strip().lower().startswith("en"):
-        return {
-            "t": "Time t (s)",
-            "tension": "Tension (N)",
-            "title_closed_t": "Closed-loop: Tension vs Time",
-            "title_mu": "Closed-loop: μ vs Time (μss & μth)",
-            "th": "T_high",
-            "tl": "T_low",
-            "ta": "T_avg",
-            "mu": "Friction coefficient μ",
-            "mu_f": "μ",
-            "mu_ss": "Baseline μss",
-            "mu_th": "Threshold μth",
-            "ss": "Stable segments",
-            "tlife": "tlife",
-        }
     return {
-        "t": "时间 t (s)",
-        "tension": "张力 (N)",
-        "title_closed_t": "闭环：张力-时间",
-        "title_mu": "闭环：摩擦系数-时间（μss 与 μth）",
-        "th": "高张力侧 T_high",
-        "tl": "低张力侧 T_low",
-        "ta": "平均张力 T_avg",
-        "mu": "摩擦系数 μ",
-        "mu_f": "μ",
-        "mu_ss": "稳定段基线 μss",
-        "mu_th": "超限阈值 μth",
-        "ss": "连续稳定段",
+        "t": "Time t (s)",
+        "tension": "Tension (N)",
+        "title_closed_t": "Closed-loop: Tension vs Time",
+        "title_mu": "Closed-loop: μ vs Time (μss & μth)",
+        "th": "T_high",
+        "tl": "T_low",
+        "ta": "T_avg",
+        "mu": "Friction coefficient μ",
+        "mu_f": "μ (filtered)",
+        "mu_ss": "Baseline μss",
+        "mu_th": "Threshold μth",
+        "ss": "Stable segments",
         "tlife": "tlife",
     }
 
 
-def _axis_limit_pair(y_min: float, y_max: float) -> Tuple[Optional[float], Optional[float]]:
-    lo = None if float(y_min) == -1.0 else float(y_min)
-    hi = None if float(y_max) == -1.0 else float(y_max)
+def _axis_limit_pair(y_min: Optional[float], y_max: Optional[float]) -> Tuple[Optional[float], Optional[float]]:
+    lo = None if y_min is None else float(y_min)
+    hi = None if y_max is None else float(y_max)
     if lo is not None and hi is not None and hi <= lo:
-        raise ValueError("Y轴上限必须大于下限，或使用 -1 表示自适应。")
+        raise ValueError("Y轴上限必须大于下限，或使用 Auto 表示自适应。")
     return lo, hi
 
 
-def _apply_y_limits(ax, y_min: float, y_max: float) -> None:
+def _apply_y_limits(ax, y_min: Optional[float], y_max: Optional[float]) -> None:
     lo, hi = _axis_limit_pair(y_min, y_max)
     current_lo, current_hi = ax.get_ylim()
     ax.set_ylim(current_lo if lo is None else lo, current_hi if hi is None else hi)
@@ -94,7 +78,7 @@ def plot_tension_axis(
     ax.set_title(labels["title_closed_t"])
     ax.set_ylabel(labels["tension"])
     _apply_y_limits(ax, options.tension_y_min, options.tension_y_max)
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, frameon=False)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.20), ncol=3, frameon=False)
 
 
 def plot_mu_axis(
@@ -110,6 +94,14 @@ def plot_mu_axis(
     stable_segs_clip = clip_stable_segments(data.t_s, result.stable_segments_idx, result.tlife_s, result.fs_hz)
 
     ax.clear()
+    if options.show_mu:
+        ax.plot(tx, mu_eval, label=labels["mu_f"], color="tab:blue", zorder=3)
+
+    if options.show_mu_ss and result.mu_ss is not None and np.isfinite(result.mu_ss):
+        ax.axhline(float(result.mu_ss), linestyle="--", label=f'{labels["mu_ss"]}={float(result.mu_ss):.4f}', color="tab:orange")
+    if options.show_mu_th and result.mu_th is not None and np.isfinite(result.mu_th):
+        ax.axhline(float(result.mu_th), linestyle="--", label=f'{labels["mu_th"]}={float(result.mu_th):.4f}', color="tab:red")
+
     if options.show_stable_segments and stable_segs_clip:
         first = True
         for k0, k1 in stable_segs_clip:
@@ -121,13 +113,6 @@ def plot_mu_axis(
             else:
                 ax.axvspan(t0, t1, alpha=0.25, color="tab:cyan", zorder=0, linewidth=0)
 
-    if options.show_mu:
-        ax.plot(tx, mu_eval, label=labels["mu_f"], color="tab:blue", zorder=3)
-
-    if options.show_mu_ss and result.mu_ss is not None and np.isfinite(result.mu_ss):
-        ax.axhline(float(result.mu_ss), linestyle="--", label=f'{labels["mu_ss"]}={float(result.mu_ss):.4f}', color="tab:orange")
-    if options.show_mu_th and result.mu_th is not None and np.isfinite(result.mu_th):
-        ax.axhline(float(result.mu_th), linestyle="--", label=f'{labels["mu_th"]}={float(result.mu_th):.4f}', color="tab:red")
     if options.show_tlife and result.tlife_s is not None:
         ax.axvline(float(result.tlife_s), linestyle="--", label=f'{labels["tlife"]}≈{float(result.tlife_s):.1f}s', color="tab:purple")
 
@@ -137,7 +122,7 @@ def plot_mu_axis(
     _apply_y_limits(ax, options.mu_y_min, options.mu_y_max)
     handles, _ = ax.get_legend_handles_labels()
     if handles:
-        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=2, frameon=False)
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.20), ncol=2, frameon=False)
 
 
 def export_monitor_plots(
@@ -160,14 +145,14 @@ def export_monitor_plots(
     ax_t = fig_t.add_subplot(111)
     plot_tension_axis(ax_t, data, result, params.max_plot_points, labels, options)
     ax_t.set_xlabel(labels["t"])
-    fig_t.tight_layout(rect=[0, 0.10, 1, 1])
+    fig_t.tight_layout(rect=[0, 0.12, 1, 1])
     p_tension = os.path.join(plot_dir, f"closed_tensions_{lang}.png")
     fig_t.savefig(p_tension, dpi=180)
 
     fig_mu = Figure(figsize=default_figsize, dpi=default_dpi)
     ax_mu = fig_mu.add_subplot(111)
     plot_mu_axis(ax_mu, data, result, params.max_plot_points, labels, options)
-    fig_mu.tight_layout(rect=[0, 0.14, 1, 1])
+    fig_mu.tight_layout(rect=[0, 0.18, 1, 1])
     p_mu = os.path.join(plot_dir, f"mu_with_baseline_threshold_{lang}.png")
     fig_mu.savefig(p_mu, dpi=180)
     fig_t.clear()
