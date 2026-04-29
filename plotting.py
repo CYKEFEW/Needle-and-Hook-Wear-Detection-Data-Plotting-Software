@@ -22,19 +22,35 @@ def downsample_for_plot(x: np.ndarray, y: np.ndarray, max_points: int = 200_000)
 
 
 def plot_labels(lang: str = "zh") -> Dict[str, str]:
+    if str(lang).strip().lower().startswith("en"):
+        return {
+            "t": "Time t (s)",
+            "tension": "Tension (N)",
+            "title_closed_t": "Closed-loop: Tension vs Time",
+            "title_mu": "Closed-loop: μ vs Time (μss & μth)",
+            "th": "T_high",
+            "tl": "T_low",
+            "ta": "T_avg",
+            "mu": "Friction coefficient μ",
+            "mu_f": "μ (filtered)",
+            "mu_ss": "Baseline μss",
+            "mu_th": "Threshold μth",
+            "ss": "Stable segments",
+            "tlife": "tlife",
+        }
     return {
-        "t": "Time t (s)",
-        "tension": "Tension (N)",
-        "title_closed_t": "Closed-loop: Tension vs Time",
-        "title_mu": "Closed-loop: μ vs Time (μss & μth)",
-        "th": "T_high",
-        "tl": "T_low",
-        "ta": "T_avg",
-        "mu": "Friction coefficient μ",
-        "mu_f": "μ (filtered)",
-        "mu_ss": "Baseline μss",
-        "mu_th": "Threshold μth",
-        "ss": "Stable segments",
+        "t": "时间 t (s)",
+        "tension": "张力 (N)",
+        "title_closed_t": "闭环：张力-时间",
+        "title_mu": "闭环：摩擦系数 μ-时间（μss 与 μth）",
+        "th": "高张力侧 T_high",
+        "tl": "低张力侧 T_low",
+        "ta": "平均张力 T_avg",
+        "mu": "摩擦系数 μ",
+        "mu_f": "μ（滤波）",
+        "mu_ss": "稳定段基线 μss",
+        "mu_th": "超限阈值 μth",
+        "ss": "连续稳定段",
         "tlife": "tlife",
     }
 

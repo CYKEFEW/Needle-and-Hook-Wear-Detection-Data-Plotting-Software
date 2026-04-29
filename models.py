@@ -124,3 +124,11 @@ class OptimizationExportResult:
     wrap_angle_rad: float
     high_spike_count: int
     low_spike_count: int
+
+
+@dataclass
+class WrapAngleExportResult:
+    output_path: str
+    row_count: int
+    wrap_angle_rad: float
+    nan_count: int

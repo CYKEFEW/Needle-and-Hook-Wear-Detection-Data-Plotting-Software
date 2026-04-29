@@ -12,9 +12,9 @@ from matplotlib.figure import Figure
 from tkinter import filedialog, messagebox, ttk
 
 from analysis import analyze_monitor_data, interpolate_invalid_samples, summary_dict, summary_lines
-from db_io import DEFAULT_DB_PATH, export_optimized_db, load_monitor_db
+from db_io import DEFAULT_DB_PATH, export_optimized_db, export_wrap_angle_db, load_monitor_db
 from models import AnalysisParams, AnalysisResult, MonitorData, OptimizationParams, OptimizedData, PlotOptions
-from optimization import infer_wrap_angle_rad, optimize_monitor_data
+from optimization import infer_wrap_angle_rad, optimize_monitor_data, recompute_mu_for_wrap_angle
 from plotting import (
     downsample_for_plot,
     export_monitor_plots,
@@ -45,12 +45,18 @@ class MonitorAnalyzerApp:
         self._opt_data: Optional[OptimizedData] = None
         self._opt_params: Optional[OptimizationParams] = None
         self._opt_signature: Optional[Tuple[str, str]] = None
+        self._wrap_source_data: Optional[MonitorData] = None
+        self._wrap_mu: Optional[np.ndarray] = None
+        self._wrap_angle: Optional[float] = None
+        self._wrap_signature: Optional[Tuple[str, str]] = None
 
         default_db = DEFAULT_DB_PATH if os.path.exists(DEFAULT_DB_PATH) else ""
         self.db_path_var = tk.StringVar(value=default_db)
         self.table_name_var = tk.StringVar(value="Data")
         self.status_var = tk.StringVar(value="选择数据库后点击“分析并绘图”。")
         self.export_lang_var = tk.StringVar(value="中文")
+        self.plot_preview_lang_var = tk.StringVar(value="中文")
+        self.plot_preview_mode_var = tk.StringVar(value="张力")
         self._param_vars: Dict[str, tk.Variable] = {}
         self._plot_limit_vars: Dict[str, tk.StringVar] = {}
         self._plot_bool_vars: Dict[str, tk.BooleanVar] = {}
@@ -72,6 +78,14 @@ class MonitorAnalyzerApp:
         self.opt_preview_mode_var = tk.StringVar(value="高张力")
         self.opt_status_var = tk.StringVar(value="选择数据库后可反推包角、生成优化预览并导出。")
 
+        self.opt_preview_lang_var = tk.StringVar(value="中文")
+        self.wrap_db_path_var = tk.StringVar(value=default_db)
+        self.wrap_table_name_var = tk.StringVar(value="Data")
+        self.wrap_output_path_var = tk.StringVar(value="")
+        self.wrap_angle_var = tk.StringVar(value="")
+        self.wrap_status_var = tk.StringVar(value="选择数据库并输入新包角后，可预览并导出重算 μ 的数据库。")
+
+        self.wrap_preview_lang_var = tk.StringVar(value="中文")
         self._build_ui()
         self.root.bind_all("<MouseWheel>", self._on_mousewheel, add="+")
         self.root.bind_all("<Button-4>", self._on_mousewheel, add="+")
@@ -84,11 +98,14 @@ class MonitorAnalyzerApp:
 
         plot_tab = ttk.Frame(self.notebook)
         opt_tab = ttk.Frame(self.notebook)
+        wrap_tab = ttk.Frame(self.notebook)
         self.notebook.add(plot_tab, text="绘图区")
         self.notebook.add(opt_tab, text="数据优化区")
 
         self._build_plot_tab(plot_tab)
+        self.notebook.add(wrap_tab, text="包角重算区")
         self._build_optimization_tab(opt_tab)
+        self._build_wrap_angle_tab(wrap_tab)
 
     def _build_plot_tab(self, parent: ttk.Frame) -> None:
         shell = ttk.Frame(parent)
@@ -214,10 +231,29 @@ class MonitorAnalyzerApp:
         top = ttk.Frame(parent)
         top.pack(fill=tk.X)
         ttk.Label(top, textvariable=self.status_var).pack(side=tk.LEFT, anchor="w")
+        ttk.Label(top, text="预览语言").pack(side=tk.RIGHT, padx=(8, 0))
+        self.plot_preview_lang_combo = ttk.Combobox(
+            top,
+            textvariable=self.plot_preview_lang_var,
+            values=("English", "中文"),
+            state="readonly",
+            width=10,
+        )
+        self.plot_preview_lang_combo.pack(side=tk.RIGHT)
+        self.plot_preview_lang_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_current_plot())
+        ttk.Label(top, text="预览曲线").pack(side=tk.RIGHT, padx=(18, 0))
+        self.plot_preview_selector = ttk.Combobox(
+            top,
+            textvariable=self.plot_preview_mode_var,
+            values=("张力", "高张力", "低张力", "平均张力", "μ"),
+            state="readonly",
+            width=8,
+        )
+        self.plot_preview_selector.pack(side=tk.RIGHT)
+        self.plot_preview_selector.bind("<<ComboboxSelected>>", lambda _event: self._refresh_current_plot())
 
-        self.figure = Figure(figsize=(11.2, 10.8), dpi=100)
-        self.ax_tension = self.figure.add_subplot(211)
-        self.ax_mu = self.figure.add_subplot(212, sharex=self.ax_tension)
+        self.figure = Figure(figsize=(11.2, 7.2), dpi=100)
+        self.ax_plot_preview = self.figure.add_subplot(111)
         self.canvas = FigureCanvasTkAgg(self.figure, master=parent)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True, pady=(8, 0))
         self.toolbar = NavigationToolbar2Tk(self.canvas, parent, pack_toolbar=False)
@@ -317,6 +353,16 @@ class MonitorAnalyzerApp:
         )
         self.opt_preview_selector.pack(side=tk.LEFT, padx=(8, 0))
         self.opt_preview_selector.bind("<<ComboboxSelected>>", lambda _event: self._refresh_optimization_preview_plot())
+        ttk.Label(preview_switch, text="预览语言").pack(side=tk.LEFT, padx=(18, 0))
+        self.opt_preview_lang_combo = ttk.Combobox(
+            preview_switch,
+            textvariable=self.opt_preview_lang_var,
+            values=("English", "中文"),
+            state="readonly",
+            width=10,
+        )
+        self.opt_preview_lang_combo.pack(side=tk.LEFT, padx=(8, 0))
+        self.opt_preview_lang_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_optimization_preview_plot())
 
         self.opt_figure = Figure(figsize=(10.8, 7.2), dpi=100)
         self.opt_ax_preview = self.opt_figure.add_subplot(111)
@@ -326,6 +372,70 @@ class MonitorAnalyzerApp:
         self.opt_toolbar.update()
         self.opt_toolbar.pack(fill=tk.X)
         self._draw_optimization_placeholder()
+
+    def _build_wrap_angle_tab(self, parent: ttk.Frame) -> None:
+        shell = ttk.Frame(parent, padding=10)
+        shell.pack(fill=tk.BOTH, expand=True)
+        shell.columnconfigure(1, weight=1)
+        shell.rowconfigure(0, weight=1)
+
+        controls = ttk.Frame(shell)
+        controls.grid(row=0, column=0, sticky="nsw", padx=(0, 12))
+        preview = ttk.Frame(shell)
+        preview.grid(row=0, column=1, sticky="nsew")
+
+        source_box = ttk.LabelFrame(controls, text="包角重算数据源", padding=10)
+        source_box.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(source_box, text="源数据库").grid(row=0, column=0, sticky="w")
+        ttk.Entry(source_box, textvariable=self.wrap_db_path_var, width=48).grid(row=1, column=0, sticky="ew", pady=(4, 6))
+        ttk.Button(source_box, text="浏览...", command=self._browse_wrap_db).grid(row=1, column=1, padx=(8, 0), sticky="ew")
+        ttk.Label(source_box, text="表名").grid(row=2, column=0, sticky="w")
+        ttk.Entry(source_box, textvariable=self.wrap_table_name_var, width=18).grid(row=2, column=0, sticky="w", pady=(4, 0))
+        source_box.columnconfigure(0, weight=1)
+
+        param_box = ttk.LabelFrame(controls, text="包角参数", padding=10)
+        param_box.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(param_box, text="新包角 θ (rad)").grid(row=0, column=0, sticky="w", pady=2)
+        ttk.Entry(param_box, textvariable=self.wrap_angle_var, width=18).grid(row=0, column=1, sticky="ew", pady=2, padx=(8, 0))
+        ttk.Button(param_box, text="自动反推当前包角", command=self._infer_wrap_recalc_angle_async).grid(row=0, column=2, padx=(8, 0))
+        param_box.columnconfigure(1, weight=1)
+
+        export_box = ttk.LabelFrame(controls, text="预览与导出", padding=10)
+        export_box.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(export_box, text="输出数据库").grid(row=0, column=0, sticky="w")
+        ttk.Entry(export_box, textvariable=self.wrap_output_path_var, width=48).grid(row=1, column=0, sticky="ew", pady=(4, 6))
+        ttk.Button(export_box, text="另存为...", command=self._browse_wrap_output).grid(row=1, column=1, padx=(8, 0))
+        self.wrap_preview_btn = ttk.Button(export_box, text="生成 μ 预览", command=self._run_wrap_preview_async)
+        self.wrap_preview_btn.grid(row=2, column=0, sticky="w", pady=(4, 0))
+        self.wrap_export_btn = ttk.Button(export_box, text="导出包角重算db", command=self._export_wrap_angle_db)
+        self.wrap_export_btn.grid(row=2, column=1, sticky="e", pady=(4, 0))
+        export_box.columnconfigure(0, weight=1)
+
+        status_box = ttk.LabelFrame(controls, text="包角重算摘要", padding=10)
+        status_box.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(status_box, textvariable=self.wrap_status_var, wraplength=360, justify=tk.LEFT).pack(fill=tk.X)
+
+        preview_switch = ttk.Frame(preview)
+        preview_switch.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(preview_switch, text="预览语言").pack(side=tk.LEFT)
+        self.wrap_preview_lang_combo = ttk.Combobox(
+            preview_switch,
+            textvariable=self.wrap_preview_lang_var,
+            values=("English", "中文"),
+            state="readonly",
+            width=10,
+        )
+        self.wrap_preview_lang_combo.pack(side=tk.LEFT, padx=(8, 0))
+        self.wrap_preview_lang_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_wrap_preview_plot())
+
+        self.wrap_figure = Figure(figsize=(10.8, 7.2), dpi=100)
+        self.wrap_ax_mu = self.wrap_figure.add_subplot(111)
+        self.wrap_canvas = FigureCanvasTkAgg(self.wrap_figure, master=preview)
+        self.wrap_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        self.wrap_toolbar = NavigationToolbar2Tk(self.wrap_canvas, preview, pack_toolbar=False)
+        self.wrap_toolbar.update()
+        self.wrap_toolbar.pack(fill=tk.X)
+        self._draw_wrap_placeholder()
 
     def _add_entry(self, parent: ttk.Widget, row: int, label: str, key: str, default) -> int:
         var = tk.StringVar(value=str(default))
@@ -346,11 +456,15 @@ class MonitorAnalyzerApp:
     def _update_strength_text(self, value_var: tk.Variable, text_var: tk.StringVar) -> None:
         text_var.set(f"{int(round(float(value_var.get())))}%")
 
+    def _preview_lang_code(self, var: tk.StringVar) -> str:
+        return "en" if var.get().strip().lower().startswith("english") else "zh"
+
     def _browse_db(self) -> None:
         path = filedialog.askopenfilename(title="选择监测数据库", filetypes=[("SQLite DB", "*.db *.sqlite *.sqlite3"), ("所有文件", "*.*")])
         if path:
             self.db_path_var.set(path)
             self.opt_db_path_var.set(path)
+            self.wrap_db_path_var.set(path)
 
     def _browse_opt_db(self) -> None:
         path = filedialog.askopenfilename(title="选择待优化数据库", filetypes=[("SQLite DB", "*.db *.sqlite *.sqlite3"), ("所有文件", "*.*")])
@@ -372,6 +486,26 @@ class MonitorAnalyzerApp:
         )
         if path:
             self.opt_output_path_var.set(path)
+
+    def _browse_wrap_db(self) -> None:
+        path = filedialog.askopenfilename(title="选择待重算包角数据库", filetypes=[("SQLite DB", "*.db *.sqlite *.sqlite3"), ("所有文件", "*.*")])
+        if path:
+            self.wrap_db_path_var.set(path)
+            self._clear_wrap_preview_state()
+            if not self.wrap_output_path_var.get().strip():
+                self.wrap_output_path_var.set(self._default_wrap_output_path(path))
+
+    def _browse_wrap_output(self) -> None:
+        default_path = self._default_wrap_output_path()
+        path = filedialog.asksaveasfilename(
+            title="保存包角重算后的数据库",
+            defaultextension=".db",
+            initialdir=os.path.dirname(default_path),
+            initialfile=os.path.basename(default_path),
+            filetypes=[("SQLite DB", "*.db *.sqlite *.sqlite3"), ("所有文件", "*.*")],
+        )
+        if path:
+            self.wrap_output_path_var.set(path)
 
     def _get_params(self) -> AnalysisParams:
         def f(name: str) -> float:
@@ -438,6 +572,17 @@ class MonitorAnalyzerApp:
         self._opt_params = None
         self._opt_signature = None
 
+    def _current_wrap_signature(self) -> Tuple[str, str]:
+        db_path = self.wrap_db_path_var.get().strip() or self.db_path_var.get().strip()
+        table_name = self.wrap_table_name_var.get().strip() or "Data"
+        return (os.path.abspath(db_path), table_name)
+
+    def _clear_wrap_preview_state(self) -> None:
+        self._wrap_source_data = None
+        self._wrap_mu = None
+        self._wrap_angle = None
+        self._wrap_signature = None
+
     def _default_optimized_output_path(self) -> str:
         source_path = ""
         if self._opt_source_data is not None:
@@ -448,6 +593,16 @@ class MonitorAnalyzerApp:
             source_path = os.path.abspath("optimized.db")
         base, ext = os.path.splitext(os.path.abspath(source_path))
         return base + "_optimized" + (ext or ".db")
+
+    def _default_wrap_output_path(self, source_path: str = "") -> str:
+        if self._wrap_source_data is not None:
+            source_path = self._wrap_source_data.db_path
+        if not source_path:
+            source_path = self.wrap_db_path_var.get().strip() or self.db_path_var.get().strip()
+        if not source_path:
+            source_path = os.path.abspath("wrap_angle.db")
+        base, ext = os.path.splitext(os.path.abspath(source_path))
+        return base + "_wrap_angle" + (ext or ".db")
 
     def _run_analysis_async(self) -> None:
         if self._worker_alive:
@@ -524,6 +679,53 @@ class MonitorAnalyzerApp:
         except Exception:
             self._queue.put(("opt_err", traceback.format_exc()))
 
+    def _infer_wrap_recalc_angle_async(self) -> None:
+        if self._opt_worker_alive:
+            return
+        db_path = self.wrap_db_path_var.get().strip() or self.db_path_var.get().strip()
+        table_name = self.wrap_table_name_var.get().strip() or "Data"
+        if not db_path:
+            messagebox.showwarning("提示", "请先选择待重算包角数据库。")
+            return
+        self._opt_worker_alive = True
+        self.wrap_status_var.set("正在读取数据库并反推当前包角...")
+        threading.Thread(target=self._infer_wrap_recalc_angle_worker, args=(db_path, table_name), daemon=True).start()
+
+    def _infer_wrap_recalc_angle_worker(self, db_path: str, table_name: str) -> None:
+        try:
+            data = load_monitor_db(db_path, table_name=table_name)
+            theta = infer_wrap_angle_rad(data)
+            self._queue.put(("wrap_theta_ok", (data, theta)))
+        except Exception:
+            self._queue.put(("wrap_err", traceback.format_exc()))
+
+    def _run_wrap_preview_async(self) -> None:
+        if self._opt_worker_alive:
+            return
+        db_path = self.wrap_db_path_var.get().strip() or self.db_path_var.get().strip()
+        table_name = self.wrap_table_name_var.get().strip() or "Data"
+        if not db_path:
+            messagebox.showwarning("提示", "请先选择待重算包角数据库。")
+            return
+        try:
+            theta = float(self.wrap_angle_var.get().strip())
+        except Exception as exc:
+            messagebox.showerror("包角参数错误", str(exc))
+            return
+        self._opt_worker_alive = True
+        self.wrap_preview_btn.configure(state=tk.DISABLED)
+        self.wrap_export_btn.configure(state=tk.DISABLED)
+        self.wrap_status_var.set("正在重算 μ 并生成预览...")
+        threading.Thread(target=self._wrap_preview_worker, args=(db_path, table_name, theta), daemon=True).start()
+
+    def _wrap_preview_worker(self, db_path: str, table_name: str, theta: float) -> None:
+        try:
+            data = load_monitor_db(db_path, table_name=table_name)
+            mu_new = recompute_mu_for_wrap_angle(data, theta)
+            self._queue.put(("wrap_preview_ok", (data, mu_new, theta)))
+        except Exception:
+            self._queue.put(("wrap_err", traceback.format_exc()))
+
     def _poll_queue(self) -> None:
         try:
             while True:
@@ -535,6 +737,10 @@ class MonitorAnalyzerApp:
                     self._opt_worker_alive = False
                     self.opt_preview_btn.configure(state=tk.NORMAL)
                     self.opt_export_btn.configure(state=tk.NORMAL)
+                if kind in {"wrap_theta_ok", "wrap_preview_ok", "wrap_err"}:
+                    self._opt_worker_alive = False
+                    self.wrap_preview_btn.configure(state=tk.NORMAL)
+                    self.wrap_export_btn.configure(state=tk.NORMAL)
 
                 if kind == "analysis_ok":
                     data, result, params = payload
@@ -567,6 +773,25 @@ class MonitorAnalyzerApp:
                 elif kind == "opt_err":
                     self.opt_status_var.set("优化失败")
                     messagebox.showerror("优化失败", str(payload))
+                if kind == "wrap_theta_ok":
+                    data, theta = payload
+                    self._wrap_source_data = data
+                    self.wrap_angle_var.set(f"{float(theta):.16g}")
+                    self.wrap_status_var.set(f"当前包角反推完成: θ={float(theta):.12g} rad | rows={data.row_count}")
+                elif kind == "wrap_preview_ok":
+                    data, mu_new, theta = payload
+                    self._wrap_source_data = data
+                    self._wrap_mu = mu_new
+                    self._wrap_angle = float(theta)
+                    self._wrap_signature = (os.path.abspath(data.db_path), data.table_name)
+                    self._draw_wrap_preview(data, mu_new, float(theta))
+                    null_count = int(np.count_nonzero(~np.isfinite(mu_new)))
+                    self.wrap_status_var.set(
+                        f"预览完成: rows={data.row_count} | 新包角 θ={float(theta):.12g} rad | NULL={null_count}"
+                    )
+                elif kind == "wrap_err":
+                    self.wrap_status_var.set("包角重算失败")
+                    messagebox.showerror("包角重算失败", str(payload))
         except queue.Empty:
             pass
         self.root.after(120, self._poll_queue)
@@ -579,7 +804,7 @@ class MonitorAnalyzerApp:
         self.summary_text.configure(state=tk.DISABLED)
 
     def _update_plots(self, data: MonitorData, result: AnalysisResult) -> None:
-        labels = plot_labels("zh")
+        labels = plot_labels(self._preview_lang_code(self.plot_preview_lang_var))
         max_points = (self._last_params or self._get_params().normalized()).max_plot_points
         options = self._get_plot_options()
         plot_tension_axis(self.ax_tension, data, result, max_points, labels, options)
@@ -590,6 +815,7 @@ class MonitorAnalyzerApp:
 
     def _refresh_current_plot(self) -> None:
         if self._last_data is None or self._last_result is None:
+            self._draw_placeholder()
             return
         try:
             self._update_plots(self._last_data, self._last_result)
@@ -640,6 +866,42 @@ class MonitorAnalyzerApp:
         )
         messagebox.showinfo("导出完成", result.output_path)
 
+    def _export_wrap_angle_db(self) -> None:
+        if self._wrap_source_data is None or self._wrap_mu is None or self._wrap_angle is None:
+            self._run_wrap_preview_async()
+            messagebox.showwarning("提示", "请先生成包角重算预览，确认后再导出。")
+            return
+
+        previous_output_path = self.wrap_output_path_var.get().strip()
+        self.wrap_output_path_var.set("")
+        self._browse_wrap_output()
+        output_path = self.wrap_output_path_var.get().strip()
+        if not output_path:
+            self.wrap_output_path_var.set(previous_output_path)
+            return
+
+        try:
+            theta = float(self.wrap_angle_var.get().strip())
+            signature = self._current_wrap_signature()
+            if self._wrap_angle != theta or self._wrap_signature != signature:
+                messagebox.showwarning("提示", "包角参数或数据源已变化，请重新生成预览后再导出。")
+                return
+            result = export_wrap_angle_db(
+                self._wrap_source_data.db_path,
+                output_path,
+                self._wrap_source_data.table_name,
+                self._wrap_mu,
+                theta,
+            )
+        except Exception:
+            messagebox.showerror("导出失败", traceback.format_exc())
+            return
+
+        self.wrap_status_var.set(
+            f"导出完成: {result.output_path}\nrows={result.row_count} | θ={result.wrap_angle_rad:.12g} rad | NULL={result.nan_count}"
+        )
+        messagebox.showinfo("导出完成", result.output_path)
+
     def _clear_result(self) -> None:
         self._last_data = None
         self._last_result = None
@@ -651,7 +913,7 @@ class MonitorAnalyzerApp:
         self._draw_placeholder()
 
     def _draw_placeholder(self) -> None:
-        labels = plot_labels("zh")
+        labels = plot_labels(self._preview_lang_code(self.plot_preview_lang_var))
         self.ax_tension.clear()
         self.ax_mu.clear()
         self.ax_tension.set_title(labels["title_closed_t"])
@@ -711,6 +973,233 @@ class MonitorAnalyzerApp:
         self.opt_ax_preview.legend(loc="upper right")
         self.opt_figure.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.10)
         self.opt_preview_canvas.draw_idle()
+
+    def _draw_wrap_placeholder(self) -> None:
+        self.wrap_ax_mu.clear()
+        self.wrap_ax_mu.set_title("包角重算：μ vs Time")
+        self.wrap_ax_mu.set_xlabel("Time t (s)")
+        self.wrap_ax_mu.set_ylabel("Friction coefficient μ")
+        self.wrap_figure.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.10)
+        self.wrap_canvas.draw_idle()
+
+    def _draw_wrap_preview(self, data: MonitorData, mu_new: np.ndarray, theta: float) -> None:
+        max_points = 40000
+        tx, raw_mu = downsample_for_plot(data.t_s, data.mu, max_points)
+        _, new_mu = downsample_for_plot(data.t_s, mu_new, max_points)
+
+        self.wrap_ax_mu.clear()
+        self.wrap_ax_mu.plot(tx, raw_mu, label="原 μ", color="tab:blue", alpha=0.55)
+        self.wrap_ax_mu.plot(tx, new_mu, label=f"新 μ (θ={theta:.6g} rad)", color="tab:red", linewidth=1.0)
+        self.wrap_ax_mu.set_title("包角重算：μ vs Time")
+        self.wrap_ax_mu.set_xlabel("Time t (s)")
+        self.wrap_ax_mu.set_ylabel("Friction coefficient μ")
+        self.wrap_ax_mu.legend(loc="upper right")
+        self.wrap_figure.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.10)
+        self.wrap_canvas.draw_idle()
+
+    def _optimization_preview_text(self, mode: str) -> Dict[str, str]:
+        is_en = self._preview_lang_code(self.opt_preview_lang_var) == "en"
+        if "low" in mode.lower() or "低" in mode:
+            key = "low"
+        elif "avg" in mode.lower() or "平均" in mode:
+            key = "avg"
+        elif "μ" in mode or "mu" in mode.lower():
+            key = "mu"
+        else:
+            key = "high"
+        labels = {
+            "high": ("Before/After Optimization: T_high", "优化前/后高张力侧对比", "T_high (N)"),
+            "low": ("Before/After Optimization: T_low", "优化前/后低张力侧对比", "T_low (N)"),
+            "avg": ("Before/After Optimization: T_avg", "优化前/后平均张力对比", "T_avg (N)"),
+            "mu": ("Before/After Optimization: μ", "优化前/后 μ 对比", "μ"),
+        }[key]
+        return {
+            "key": key,
+            "title": labels[0] if is_en else labels[1],
+            "ylabel": labels[2],
+            "xlabel": "Time t (s)" if is_en else "时间 t (s)",
+            "before": "Before" if is_en else "优化前",
+            "after": "After" if is_en else "优化后",
+        }
+
+    def _draw_optimization_placeholder(self) -> None:
+        text = self._optimization_preview_text(self.opt_preview_mode_var.get().strip())
+        self.opt_ax_preview.clear()
+        self.opt_ax_preview.set_title(text["title"])
+        self.opt_ax_preview.set_ylabel(text["ylabel"])
+        self.opt_ax_preview.set_xlabel(text["xlabel"])
+        self.opt_figure.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.10)
+        self.opt_preview_canvas.draw_idle()
+
+    def _refresh_optimization_preview_plot(self) -> None:
+        if self._opt_source_data is None or self._opt_data is None:
+            self._draw_optimization_placeholder()
+            return
+        self._draw_optimization_preview(self._opt_source_data, self._opt_data)
+
+    def _draw_optimization_preview(self, data: MonitorData, optimized: OptimizedData) -> None:
+        text = self._optimization_preview_text(self.opt_preview_mode_var.get().strip())
+        max_points = 40000
+        q_from_db = np.asarray(data.quality_flag, dtype=int) != 0
+        display_high = interpolate_invalid_samples(data.t_high_N, q_from_db)
+        display_low = interpolate_invalid_samples(data.t_low_N, q_from_db)
+        display_avg = (display_high + display_low) / 2.0
+        display_mu = interpolate_invalid_samples(data.mu, q_from_db)
+
+        tx, raw_high = downsample_for_plot(data.t_s, display_high, max_points)
+        _, opt_high = downsample_for_plot(data.t_s, optimized.t_high_N, max_points)
+        _, raw_low = downsample_for_plot(data.t_s, display_low, max_points)
+        _, opt_low = downsample_for_plot(data.t_s, optimized.t_low_N, max_points)
+        _, raw_avg = downsample_for_plot(data.t_s, display_avg, max_points)
+        _, opt_avg = downsample_for_plot(data.t_s, optimized.t_avg_N, max_points)
+        _, raw_mu = downsample_for_plot(data.t_s, display_mu, max_points)
+        _, opt_mu = downsample_for_plot(data.t_s, optimized.mu, max_points)
+
+        series = {
+            "high": (raw_high, opt_high),
+            "low": (raw_low, opt_low),
+            "avg": (raw_avg, opt_avg),
+            "mu": (raw_mu, opt_mu),
+        }
+        raw_y, opt_y = series[text["key"]]
+        self.opt_ax_preview.clear()
+        self.opt_ax_preview.plot(tx, raw_y, label=text["before"], color="tab:blue", alpha=0.55)
+        self.opt_ax_preview.plot(tx, opt_y, label=text["after"], color="tab:red", linewidth=1.0)
+        self.opt_ax_preview.set_title(text["title"])
+        self.opt_ax_preview.set_ylabel(text["ylabel"])
+        self.opt_ax_preview.set_xlabel(text["xlabel"])
+        self.opt_ax_preview.legend(loc="upper right")
+        self.opt_figure.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.10)
+        self.opt_preview_canvas.draw_idle()
+
+    def _wrap_preview_text(self) -> Dict[str, str]:
+        is_en = self._preview_lang_code(self.wrap_preview_lang_var) == "en"
+        return {
+            "title": "Wrap Angle Recalculation: μ vs Time" if is_en else "包角重算：μ-时间",
+            "xlabel": "Time t (s)" if is_en else "时间 t (s)",
+            "ylabel": "Friction coefficient μ" if is_en else "摩擦系数 μ",
+            "old": "Original μ" if is_en else "原 μ",
+            "new": "New μ" if is_en else "新 μ",
+        }
+
+    def _draw_wrap_placeholder(self) -> None:
+        text = self._wrap_preview_text()
+        self.wrap_ax_mu.clear()
+        self.wrap_ax_mu.set_title(text["title"])
+        self.wrap_ax_mu.set_xlabel(text["xlabel"])
+        self.wrap_ax_mu.set_ylabel(text["ylabel"])
+        self.wrap_figure.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.10)
+        self.wrap_canvas.draw_idle()
+
+    def _refresh_wrap_preview_plot(self) -> None:
+        if self._wrap_source_data is None or self._wrap_mu is None or self._wrap_angle is None:
+            self._draw_wrap_placeholder()
+            return
+        self._draw_wrap_preview(self._wrap_source_data, self._wrap_mu, self._wrap_angle)
+
+    def _draw_wrap_preview(self, data: MonitorData, mu_new: np.ndarray, theta: float) -> None:
+        text = self._wrap_preview_text()
+        max_points = 40000
+        tx, raw_mu = downsample_for_plot(data.t_s, data.mu, max_points)
+        _, new_mu = downsample_for_plot(data.t_s, mu_new, max_points)
+
+        self.wrap_ax_mu.clear()
+        self.wrap_ax_mu.plot(tx, raw_mu, label=text["old"], color="tab:blue", alpha=0.55)
+        self.wrap_ax_mu.plot(tx, new_mu, label=f'{text["new"]} (θ={theta:.6g} rad)', color="tab:red", linewidth=1.0)
+        self.wrap_ax_mu.set_title(text["title"])
+        self.wrap_ax_mu.set_xlabel(text["xlabel"])
+        self.wrap_ax_mu.set_ylabel(text["ylabel"])
+        self.wrap_ax_mu.legend(loc="upper right")
+        self.wrap_figure.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.10)
+        self.wrap_canvas.draw_idle()
+
+    def _plot_preview_kind(self) -> str:
+        mode = self.plot_preview_mode_var.get().strip().lower()
+        if "μ" in mode or "mu" in mode or "摩擦" in mode:
+            return "mu"
+        if "高" in mode or "high" in mode:
+            return "high"
+        if "低" in mode or "low" in mode:
+            return "low"
+        if "平均" in mode or "avg" in mode:
+            return "avg"
+        return "tension"
+
+    def _apply_plot_preview_tension_limits(self, options: PlotOptions) -> None:
+        lo = options.tension_y_min
+        hi = options.tension_y_max
+        if lo is None and hi is None:
+            return
+        current_lo, current_hi = self.ax_plot_preview.get_ylim()
+        self.ax_plot_preview.set_ylim(current_lo if lo is None else lo, current_hi if hi is None else hi)
+
+    def _plot_single_tension_preview(
+        self,
+        data: MonitorData,
+        y: np.ndarray,
+        label: str,
+        title: str,
+        color: str,
+        max_points: int,
+        labels: Dict[str, str],
+        options: PlotOptions,
+    ) -> None:
+        tx, yy = downsample_for_plot(data.t_s, y, max_points)
+        self.ax_plot_preview.clear()
+        self.ax_plot_preview.plot(tx, yy, label=label, color=color)
+        self.ax_plot_preview.set_title(title)
+        self.ax_plot_preview.set_ylabel(labels["tension"])
+        self.ax_plot_preview.set_xlabel(labels["t"])
+        self._apply_plot_preview_tension_limits(options)
+        self.ax_plot_preview.legend(loc="upper center", bbox_to_anchor=(0.5, -0.20), ncol=1, frameon=False)
+
+    def _update_plots(self, data: MonitorData, result: AnalysisResult) -> None:
+        labels = plot_labels(self._preview_lang_code(self.plot_preview_lang_var))
+        max_points = self._get_params().normalized().max_plot_points
+        options = self._get_plot_options()
+        kind = self._plot_preview_kind()
+        self.ax_plot_preview.clear()
+        if kind == "mu":
+            plot_mu_axis(self.ax_plot_preview, data, result, max_points, labels, options)
+            self.figure.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.20)
+        elif kind == "high":
+            self._plot_single_tension_preview(data, result.display_t_high, labels["th"], labels["th"], "tab:blue", max_points, labels, options)
+            self.figure.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.18)
+        elif kind == "low":
+            self._plot_single_tension_preview(data, result.display_t_low, labels["tl"], labels["tl"], "tab:orange", max_points, labels, options)
+            self.figure.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.18)
+        elif kind == "avg":
+            self._plot_single_tension_preview(data, result.display_t_avg, labels["ta"], labels["ta"], "tab:green", max_points, labels, options)
+            self.figure.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.18)
+        else:
+            plot_tension_axis(self.ax_plot_preview, data, result, max_points, labels, options)
+            self.ax_plot_preview.set_xlabel(labels["t"])
+            self.figure.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.18)
+        self.canvas.draw_idle()
+        self.root.after_idle(self._on_body_configure)
+
+    def _draw_placeholder(self) -> None:
+        labels = plot_labels(self._preview_lang_code(self.plot_preview_lang_var))
+        kind = self._plot_preview_kind()
+        self.ax_plot_preview.clear()
+        if kind == "mu":
+            self.ax_plot_preview.set_title(labels["title_mu"])
+            self.ax_plot_preview.set_ylabel(labels["mu"])
+        elif kind == "high":
+            self.ax_plot_preview.set_title(labels["th"])
+            self.ax_plot_preview.set_ylabel(labels["tension"])
+        elif kind == "low":
+            self.ax_plot_preview.set_title(labels["tl"])
+            self.ax_plot_preview.set_ylabel(labels["tension"])
+        elif kind == "avg":
+            self.ax_plot_preview.set_title(labels["ta"])
+            self.ax_plot_preview.set_ylabel(labels["tension"])
+        else:
+            self.ax_plot_preview.set_title(labels["title_closed_t"])
+            self.ax_plot_preview.set_ylabel(labels["tension"])
+        self.ax_plot_preview.set_xlabel(labels["t"])
+        self.figure.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.12)
+        self.canvas.draw_idle()
 
 
 def run_headless(db_path: str, table_name: str, params: AnalysisParams) -> Dict[str, object]:

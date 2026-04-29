@@ -21,6 +21,19 @@ def infer_wrap_angle_rad(data: MonitorData) -> float:
     return float(np.nanmedian(theta))
 
 
+def recompute_mu_for_wrap_angle(data: MonitorData, wrap_angle_rad: float) -> np.ndarray:
+    theta = float(wrap_angle_rad)
+    if not np.isfinite(theta) or abs(theta) <= 1e-12:
+        raise ValueError("包角必须是非零有限数值。")
+    high = np.asarray(data.t_high_N, dtype=float)
+    low = np.asarray(data.t_low_N, dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        mu = np.log(high / low) / theta
+    mu = np.asarray(mu, dtype=float)
+    mu[~np.isfinite(mu)] = np.nan
+    return mu
+
+
 def _window_samples(window_s: float, fs_hz: float, minimum: int = 1, odd: bool = True) -> int:
     n = int(round(max(0.0, float(window_s)) * max(1e-9, float(fs_hz))))
     n = max(minimum, n)

@@ -1,4 +1,4 @@
-import argparse
+﻿import argparse
 import json
 import tkinter as tk
 
@@ -24,9 +24,11 @@ def main() -> None:
     if args.db:
         app.db_path_var.set(args.db)
         app.opt_db_path_var.set(args.db)
+        app.wrap_db_path_var.set(args.db)
     if args.table:
         app.table_name_var.set(args.table)
         app.opt_table_name_var.set(args.table)
+        app.wrap_table_name_var.set(args.table)
     root.mainloop()
 
 

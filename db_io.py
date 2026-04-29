@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 
-from models import MonitorData, OptimizedData, OptimizationExportResult, OptimizationParams
+from models import MonitorData, OptimizedData, OptimizationExportResult, OptimizationParams, WrapAngleExportResult
 
 
 DEFAULT_DB_PATH = os.path.join(os.path.dirname(__file__), "data", "needle_hook_wear.db")
@@ -205,4 +205,56 @@ def export_optimized_db(
         wrap_angle_rad=float(params.wrap_angle_rad),
         high_spike_count=int(optimized.high_spike_count),
         low_spike_count=int(optimized.low_spike_count),
+    )
+
+
+def export_wrap_angle_db(
+    source_db_path: str,
+    output_db_path: str,
+    table_name: str,
+    mu_values: np.ndarray,
+    wrap_angle_rad: float,
+) -> WrapAngleExportResult:
+    source_abs = os.path.abspath(source_db_path)
+    output_abs = os.path.abspath(output_db_path)
+    if source_abs == output_abs:
+        raise ValueError("导出路径不能覆盖原数据库，请另存为新的 .db 文件。")
+    if not os.path.exists(source_abs):
+        raise FileNotFoundError(source_abs)
+
+    out_dir = os.path.dirname(output_abs)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    shutil.copy2(source_abs, output_abs)
+
+    mu_arr = np.asarray(mu_values, dtype=float)
+    conn = sqlite3.connect(output_abs)
+    try:
+        cols = resolve_data_columns(conn, table_name)
+        if cols["mu"] is None:
+            raise ValueError("导出数据库缺少待更新列: mu")
+
+        rowids = [row[0] for row in conn.execute(f"SELECT rowid FROM {quote_ident(table_name)} ORDER BY rowid")]
+        if len(rowids) != len(mu_arr):
+            raise ValueError(f"重算结果行数 {len(mu_arr)} 与数据库行数 {len(rowids)} 不一致")
+
+        update_sql = (
+            f"UPDATE {quote_ident(table_name)} SET "
+            f"{quote_ident(cols['mu'])}=? "
+            "WHERE rowid=?"
+        )
+        payload = zip([None if not np.isfinite(v) else float(v) for v in mu_arr], rowids)
+        conn.executemany(update_sql, payload)
+        conn.commit()
+    except Exception:
+        conn.close()
+        raise
+    else:
+        conn.close()
+
+    return WrapAngleExportResult(
+        output_path=output_abs,
+        row_count=int(len(mu_arr)),
+        wrap_angle_rad=float(wrap_angle_rad),
+        nan_count=int(np.count_nonzero(~np.isfinite(mu_arr))),
     )
