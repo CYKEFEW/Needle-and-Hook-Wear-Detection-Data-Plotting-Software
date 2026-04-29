@@ -60,6 +60,7 @@ class MonitorAnalyzerApp:
         self._param_vars: Dict[str, tk.Variable] = {}
         self._plot_limit_vars: Dict[str, tk.StringVar] = {}
         self._plot_bool_vars: Dict[str, tk.BooleanVar] = {}
+        self._export_bool_vars: Dict[str, tk.BooleanVar] = {}
 
         self.opt_db_path_var = tk.StringVar(value=default_db)
         self.opt_table_name_var = tk.StringVar(value="Data")
@@ -218,6 +219,22 @@ class MonitorAnalyzerApp:
         )
         ttk.Button(export_row, text="导出图片...", command=self._export_plots).pack(side=tk.LEFT)
 
+        export_content_box = ttk.LabelFrame(parent, text="导出内容", padding=10)
+        export_content_box.pack(fill=tk.X, pady=(0, 10))
+        export_items = [
+            ("tension", "张力", True),
+            ("high", "高张力", False),
+            ("low", "低张力", False),
+            ("avg", "平均张力", False),
+            ("mu", "摩擦系数", True),
+        ]
+        for i, (key, text, default) in enumerate(export_items):
+            var = tk.BooleanVar(value=default)
+            self._export_bool_vars[key] = var
+            ttk.Checkbutton(export_content_box, text=text, variable=var).grid(
+                row=i // 2, column=i % 2, sticky="w", padx=(0, 16), pady=2
+            )
+
         result_box = ttk.LabelFrame(parent, text="结果摘要", padding=10)
         result_box.pack(fill=tk.BOTH, expand=True)
         self.summary_text = tk.Text(result_box, width=44, height=14, wrap=tk.WORD)
@@ -252,10 +269,14 @@ class MonitorAnalyzerApp:
         self.plot_preview_selector.pack(side=tk.RIGHT)
         self.plot_preview_selector.bind("<<ComboboxSelected>>", lambda _event: self._refresh_current_plot())
 
-        self.figure = Figure(figsize=(11.2, 7.2), dpi=100)
+        preview_figsize = tuple(float(v) for v in matplotlib.rcParams["figure.figsize"])
+        preview_dpi = float(matplotlib.rcParams["figure.dpi"])
+        self.figure = Figure(figsize=preview_figsize, dpi=preview_dpi)
         self.ax_plot_preview = self.figure.add_subplot(111)
         self.canvas = FigureCanvasTkAgg(self.figure, master=parent)
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True, pady=(8, 0))
+        plot_widget = self.canvas.get_tk_widget()
+        plot_widget.configure(width=int(preview_figsize[0] * preview_dpi), height=int(preview_figsize[1] * preview_dpi))
+        plot_widget.pack(anchor="n", pady=(8, 0))
         self.toolbar = NavigationToolbar2Tk(self.canvas, parent, pack_toolbar=False)
         self.toolbar.update()
         self.toolbar.pack(fill=tk.X)
@@ -830,8 +851,20 @@ class MonitorAnalyzerApp:
         if not out_dir:
             return
         lang = "en" if self.export_lang_var.get().strip().lower().startswith("english") else "zh"
+        export_items = [key for key, var in self._export_bool_vars.items() if bool(var.get())]
+        if not export_items:
+            messagebox.showwarning("提示", "请至少选择一项导出内容。")
+            return
         try:
-            outputs = export_monitor_plots(self._last_data, self._last_result, self._last_params, out_dir, lang=lang, options=self._get_plot_options())
+            outputs = export_monitor_plots(
+                self._last_data,
+                self._last_result,
+                self._last_params,
+                out_dir,
+                lang=lang,
+                options=self._get_plot_options(),
+                export_items=export_items,
+            )
         except Exception:
             messagebox.showerror("导出失败", traceback.format_exc())
             return
@@ -1161,20 +1194,20 @@ class MonitorAnalyzerApp:
         self.ax_plot_preview.clear()
         if kind == "mu":
             plot_mu_axis(self.ax_plot_preview, data, result, max_points, labels, options)
-            self.figure.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.20)
+            self.figure.tight_layout(rect=[0, 0.18, 1, 1])
         elif kind == "high":
             self._plot_single_tension_preview(data, result.display_t_high, labels["th"], labels["th"], "tab:blue", max_points, labels, options)
-            self.figure.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.18)
+            self.figure.tight_layout(rect=[0, 0.12, 1, 1])
         elif kind == "low":
             self._plot_single_tension_preview(data, result.display_t_low, labels["tl"], labels["tl"], "tab:orange", max_points, labels, options)
-            self.figure.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.18)
+            self.figure.tight_layout(rect=[0, 0.12, 1, 1])
         elif kind == "avg":
             self._plot_single_tension_preview(data, result.display_t_avg, labels["ta"], labels["ta"], "tab:green", max_points, labels, options)
-            self.figure.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.18)
+            self.figure.tight_layout(rect=[0, 0.12, 1, 1])
         else:
             plot_tension_axis(self.ax_plot_preview, data, result, max_points, labels, options)
             self.ax_plot_preview.set_xlabel(labels["t"])
-            self.figure.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.18)
+            self.figure.tight_layout(rect=[0, 0.12, 1, 1])
         self.canvas.draw_idle()
         self.root.after_idle(self._on_body_configure)
 
@@ -1198,7 +1231,7 @@ class MonitorAnalyzerApp:
             self.ax_plot_preview.set_title(labels["title_closed_t"])
             self.ax_plot_preview.set_ylabel(labels["tension"])
         self.ax_plot_preview.set_xlabel(labels["t"])
-        self.figure.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.12)
+        self.figure.tight_layout()
         self.canvas.draw_idle()
 
 

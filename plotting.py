@@ -1,5 +1,5 @@
 import os
-from typing import Dict, Optional, Tuple
+from typing import Dict, Iterable, Optional, Tuple
 
 import matplotlib
 import numpy as np
@@ -97,6 +97,29 @@ def plot_tension_axis(
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.20), ncol=3, frameon=False)
 
 
+def plot_single_tension_axis(
+    ax,
+    data: MonitorData,
+    y: np.ndarray,
+    title: str,
+    legend_label: str,
+    color: str,
+    max_points: int,
+    labels: Dict[str, str],
+    options: Optional[PlotOptions] = None,
+) -> None:
+    options = options or PlotOptions()
+    tx, yy = downsample_for_plot(data.t_s, y, max_points)
+
+    ax.clear()
+    ax.plot(tx, yy, label=legend_label, color=color)
+    ax.set_title(title)
+    ax.set_xlabel(labels["t"])
+    ax.set_ylabel(labels["tension"])
+    _apply_y_limits(ax, options.tension_y_min, options.tension_y_max)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.20), ncol=1, frameon=False)
+
+
 def plot_mu_axis(
     ax,
     data: MonitorData,
@@ -148,33 +171,54 @@ def export_monitor_plots(
     out_dir: str,
     lang: str = "zh",
     options: Optional[PlotOptions] = None,
+    export_items: Optional[Iterable[str]] = None,
 ) -> Dict[str, str]:
     params = params.normalized()
     labels = plot_labels(lang)
     options = options or PlotOptions()
+    selected = set(("tension", "mu") if export_items is None else export_items)
     plot_dir = os.path.join(os.path.abspath(out_dir), "plots")
     os.makedirs(plot_dir, exist_ok=True)
     default_figsize = tuple(float(v) for v in matplotlib.rcParams["figure.figsize"])
     default_dpi = float(matplotlib.rcParams["figure.dpi"])
+    outputs: Dict[str, str] = {}
 
-    fig_t = Figure(figsize=default_figsize, dpi=default_dpi)
-    ax_t = fig_t.add_subplot(111)
-    plot_tension_axis(ax_t, data, result, params.max_plot_points, labels, options)
-    ax_t.set_xlabel(labels["t"])
-    fig_t.tight_layout(rect=[0, 0.12, 1, 1])
-    p_tension = os.path.join(plot_dir, f"closed_tensions_{lang}.png")
-    fig_t.savefig(p_tension, dpi=180)
+    if "tension" in selected:
+        fig_t = Figure(figsize=default_figsize, dpi=default_dpi)
+        ax_t = fig_t.add_subplot(111)
+        plot_tension_axis(ax_t, data, result, params.max_plot_points, labels, options)
+        ax_t.set_xlabel(labels["t"])
+        fig_t.tight_layout(rect=[0, 0.12, 1, 1])
+        path = os.path.join(plot_dir, f"closed_tensions_{lang}.png")
+        fig_t.savefig(path, dpi=180)
+        fig_t.clear()
+        outputs["closed_tension"] = path
 
-    fig_mu = Figure(figsize=default_figsize, dpi=default_dpi)
-    ax_mu = fig_mu.add_subplot(111)
-    plot_mu_axis(ax_mu, data, result, params.max_plot_points, labels, options)
-    fig_mu.tight_layout(rect=[0, 0.18, 1, 1])
-    p_mu = os.path.join(plot_dir, f"mu_with_baseline_threshold_{lang}.png")
-    fig_mu.savefig(p_mu, dpi=180)
-    fig_t.clear()
-    fig_mu.clear()
-
-    return {
-        "closed_tension": p_tension,
-        "mu_time": p_mu,
+    single_tension_specs = {
+        "high": (result.display_t_high, labels["th"], labels["th"], "tab:blue", f"tension_high_{lang}.png"),
+        "low": (result.display_t_low, labels["tl"], labels["tl"], "tab:orange", f"tension_low_{lang}.png"),
+        "avg": (result.display_t_avg, labels["ta"], labels["ta"], "tab:green", f"tension_avg_{lang}.png"),
     }
+    for key, (y, title, legend_label, color, filename) in single_tension_specs.items():
+        if key not in selected:
+            continue
+        fig_single = Figure(figsize=default_figsize, dpi=default_dpi)
+        ax_single = fig_single.add_subplot(111)
+        plot_single_tension_axis(ax_single, data, y, title, legend_label, color, params.max_plot_points, labels, options)
+        fig_single.tight_layout(rect=[0, 0.12, 1, 1])
+        path = os.path.join(plot_dir, filename)
+        fig_single.savefig(path, dpi=180)
+        fig_single.clear()
+        outputs[key] = path
+
+    if "mu" in selected:
+        fig_mu = Figure(figsize=default_figsize, dpi=default_dpi)
+        ax_mu = fig_mu.add_subplot(111)
+        plot_mu_axis(ax_mu, data, result, params.max_plot_points, labels, options)
+        fig_mu.tight_layout(rect=[0, 0.18, 1, 1])
+        path = os.path.join(plot_dir, f"mu_with_baseline_threshold_{lang}.png")
+        fig_mu.savefig(path, dpi=180)
+        fig_mu.clear()
+        outputs["mu_time"] = path
+
+    return outputs
