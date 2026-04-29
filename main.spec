@@ -7,7 +7,12 @@ local_hiddenimports = [
     'models',
     'optimization',
     'plotting',
+    'sqlite3',
+    'tkinter',
+    'tkinter.filedialog',
+    'tkinter.messagebox',
     'matplotlib.backends.backend_tkagg',
+    'matplotlib.backends.backend_agg',
 ]
 
 
@@ -15,7 +20,10 @@ a = Analysis(
     ['needle_hook_data_plot.py'],
     pathex=[],
     binaries=[],
-    datas=[('database', 'database')],
+    datas=[
+        ('database', 'database'),
+        ('README.md', '.'),
+    ],
     hiddenimports=local_hiddenimports,
     hookspath=[],
     hooksconfig={},
