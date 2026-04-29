@@ -71,6 +71,8 @@ def _apply_y_limits(ax, y_min: Optional[float], y_max: Optional[float]) -> None:
 
 def validate_plot_options(options: PlotOptions) -> None:
     _axis_limit_pair(options.tension_y_min, options.tension_y_max)
+    _axis_limit_pair(options.high_tension_y_min, options.high_tension_y_max)
+    _axis_limit_pair(options.low_tension_y_min, options.low_tension_y_max)
     _axis_limit_pair(options.mu_y_min, options.mu_y_max)
 
 
@@ -107,6 +109,8 @@ def plot_single_tension_axis(
     max_points: int,
     labels: Dict[str, str],
     options: Optional[PlotOptions] = None,
+    y_min: Optional[float] = None,
+    y_max: Optional[float] = None,
 ) -> None:
     options = options or PlotOptions()
     tx, yy = downsample_for_plot(data.t_s, y, max_points)
@@ -116,7 +120,7 @@ def plot_single_tension_axis(
     ax.set_title(title)
     ax.set_xlabel(labels["t"])
     ax.set_ylabel(labels["tension"])
-    _apply_y_limits(ax, options.tension_y_min, options.tension_y_max)
+    _apply_y_limits(ax, y_min, y_max)
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.20), ncol=1, frameon=False)
 
 
@@ -195,16 +199,52 @@ def export_monitor_plots(
         outputs["closed_tension"] = path
 
     single_tension_specs = {
-        "high": (result.display_t_high, labels["th"], labels["th"], "tab:blue", f"tension_high_{lang}.png"),
-        "low": (result.display_t_low, labels["tl"], labels["tl"], "tab:orange", f"tension_low_{lang}.png"),
-        "avg": (result.display_t_avg, labels["ta"], labels["ta"], "tab:green", f"tension_avg_{lang}.png"),
+        "high": (
+            result.display_t_high,
+            labels["th"],
+            labels["th"],
+            "tab:blue",
+            f"tension_high_{lang}.png",
+            options.high_tension_y_min,
+            options.high_tension_y_max,
+        ),
+        "low": (
+            result.display_t_low,
+            labels["tl"],
+            labels["tl"],
+            "tab:orange",
+            f"tension_low_{lang}.png",
+            options.low_tension_y_min,
+            options.low_tension_y_max,
+        ),
+        "avg": (
+            result.display_t_avg,
+            labels["ta"],
+            labels["ta"],
+            "tab:green",
+            f"tension_avg_{lang}.png",
+            options.tension_y_min,
+            options.tension_y_max,
+        ),
     }
-    for key, (y, title, legend_label, color, filename) in single_tension_specs.items():
+    for key, (y, title, legend_label, color, filename, y_min, y_max) in single_tension_specs.items():
         if key not in selected:
             continue
         fig_single = Figure(figsize=default_figsize, dpi=default_dpi)
         ax_single = fig_single.add_subplot(111)
-        plot_single_tension_axis(ax_single, data, y, title, legend_label, color, params.max_plot_points, labels, options)
+        plot_single_tension_axis(
+            ax_single,
+            data,
+            y,
+            title,
+            legend_label,
+            color,
+            params.max_plot_points,
+            labels,
+            options,
+            y_min=y_min,
+            y_max=y_max,
+        )
         fig_single.tight_layout(rect=[0, 0.12, 1, 1])
         path = os.path.join(plot_dir, filename)
         fig_single.savefig(path, dpi=180)

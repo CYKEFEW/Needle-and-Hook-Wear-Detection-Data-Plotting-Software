@@ -71,6 +71,10 @@ class AnalysisResult:
 class PlotOptions:
     tension_y_min: Optional[float] = None
     tension_y_max: Optional[float] = None
+    high_tension_y_min: Optional[float] = None
+    high_tension_y_max: Optional[float] = None
+    low_tension_y_min: Optional[float] = None
+    low_tension_y_max: Optional[float] = None
     mu_y_min: Optional[float] = None
     mu_y_max: Optional[float] = None
     show_mu: bool = True

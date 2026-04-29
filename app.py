@@ -159,35 +159,59 @@ class MonitorAnalyzerApp:
         file_box.pack(fill=tk.X, pady=(0, 10))
 
         ttk.Label(file_box, text="数据库").grid(row=0, column=0, sticky="w")
-        ttk.Entry(file_box, textvariable=self.db_path_var, width=48).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 6))
-        ttk.Button(file_box, text="浏览...", command=self._browse_db).grid(row=1, column=2, padx=(8, 0), sticky="ew")
+        ttk.Entry(file_box, textvariable=self.db_path_var, width=42).grid(row=0, column=1, sticky="ew", padx=(8, 6))
+        ttk.Button(file_box, text="浏览...", command=self._browse_db).grid(row=0, column=2, sticky="ew")
 
-        ttk.Label(file_box, text="表名").grid(row=2, column=0, sticky="w")
-        ttk.Entry(file_box, textvariable=self.table_name_var, width=18).grid(row=2, column=1, sticky="w", pady=(4, 0))
-        file_box.columnconfigure(0, weight=1)
+        ttk.Label(file_box, text="表名").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        ttk.Entry(file_box, textvariable=self.table_name_var, width=14).grid(row=1, column=1, sticky="w", pady=(6, 0), padx=(8, 0))
         file_box.columnconfigure(1, weight=1)
 
         calc_box = ttk.LabelFrame(parent, text="判据参数", padding=10)
         calc_box.pack(fill=tk.BOTH, expand=False, pady=(0, 10))
-        row = 0
-        row = self._add_entry(calc_box, row, "稳态窗口 Wss (s)", "stable_win_s", 1200.0)
-        row = self._add_entry(calc_box, row, "稳态最短保持 Whold (s)", "stable_hold_s", 3600.0)
-        row = self._add_entry(calc_box, row, "稳态标准差阈值 σmax", "stable_sigma_max", 0.03)
-        row = self._add_entry(calc_box, row, "稳态总漂移阈值 Δμmax", "stable_slope_max", 0.015)
-        row = self._add_entry(calc_box, row, "稳态有效比例 qmin", "stable_valid_min", 0.9)
-        row = self._add_entry(calc_box, row, "失效阈值增量 δ", "fail_delta", 0.25)
-        row = self._add_entry(calc_box, row, "持续超阈值 Wpersist (s)", "fail_hold_s", 300.0)
-        row = self._add_entry(calc_box, row, "最大容忍中断 Wbreak (s)", "fail_break_s", 1.0)
-        row = self._add_entry(calc_box, row, "采样率 fs (Hz, 0=自动推断)", "sample_rate_hz", 0.0)
-        self._add_entry(calc_box, row, "绘图最大点数", "max_plot_points", 40000)
+        param_items = [
+            ("稳态窗口 Wss (s)", "stable_win_s", 1200.0),
+            ("稳态最短保持 Whold (s)", "stable_hold_s", 3600.0),
+            ("稳态标准差阈值 σmax", "stable_sigma_max", 0.03),
+            ("稳态总漂移阈值 Δμmax", "stable_slope_max", 0.015),
+            ("稳态有效比例 qmin", "stable_valid_min", 0.9),
+            ("失效阈值增量 δ", "fail_delta", 0.25),
+            ("持续超阈值 Wpersist (s)", "fail_hold_s", 300.0),
+            ("最大容忍中断 Wbreak (s)", "fail_break_s", 1.0),
+            ("采样率 fs (Hz, 0=自动推断)", "sample_rate_hz", 0.0),
+            ("绘图最大点数", "max_plot_points", 40000),
+        ]
+        for i, (label, key, default) in enumerate(param_items):
+            row = i // 2
+            col = (i % 2) * 2
+            var = tk.StringVar(value=str(default))
+            self._param_vars[key] = var
+            ttk.Label(calc_box, text=label).grid(row=row, column=col, sticky="w", pady=2, padx=(0, 6))
+            ttk.Entry(calc_box, textvariable=var, width=12).grid(row=row, column=col + 1, sticky="ew", pady=2, padx=(0, 12))
         calc_box.columnconfigure(1, weight=1)
+        calc_box.columnconfigure(3, weight=1)
 
         plot_box = ttk.LabelFrame(parent, text="绘图显示", padding=10)
         plot_box.pack(fill=tk.X, pady=(0, 10))
-        self._add_plot_limit(plot_box, 0, "张力Y下限", "tension_y_min")
-        self._add_plot_limit(plot_box, 1, "张力Y上限", "tension_y_max")
-        self._add_plot_limit(plot_box, 2, "μY下限", "mu_y_min")
-        self._add_plot_limit(plot_box, 3, "μY上限", "mu_y_max")
+        limit_items = [
+            ("张力Y下限", "tension_y_min"),
+            ("张力Y上限", "tension_y_max"),
+            ("高张力Y下限", "high_tension_y_min"),
+            ("高张力Y上限", "high_tension_y_max"),
+            ("低张力Y下限", "low_tension_y_min"),
+            ("低张力Y上限", "low_tension_y_max"),
+            ("μY下限", "mu_y_min"),
+            ("μY上限", "mu_y_max"),
+        ]
+        for i, (label, key) in enumerate(limit_items):
+            row = i // 2
+            col = (i % 2) * 2
+            var = tk.StringVar(value="Auto")
+            self._plot_limit_vars[key] = var
+            ttk.Label(plot_box, text=label).grid(row=row, column=col, sticky="w", pady=2, padx=(0, 6))
+            entry = ttk.Entry(plot_box, textvariable=var, width=12)
+            entry.grid(row=row, column=col + 1, sticky="ew", pady=2, padx=(0, 12))
+            entry.bind("<Return>", lambda _event: self._refresh_current_plot())
+            entry.bind("<FocusOut>", lambda _event: self._refresh_current_plot())
         for i, (key, text) in enumerate(
             [
                 ("show_mu", "μ"),
@@ -196,31 +220,28 @@ class MonitorAnalyzerApp:
                 ("show_tlife", "tlife"),
                 ("show_mu_th", "超限阈值"),
             ],
-            start=4,
+            start=0,
         ):
             var = tk.BooleanVar(value=True)
             self._plot_bool_vars[key] = var
             ttk.Checkbutton(plot_box, text=text, variable=var, command=self._refresh_current_plot).grid(
-                row=i, column=0, columnspan=2, sticky="w", pady=2
+                row=4 + i // 3, column=i % 3, sticky="w", pady=(6 if i < 3 else 2, 2), padx=(0, 12)
             )
         plot_box.columnconfigure(1, weight=1)
+        plot_box.columnconfigure(3, weight=1)
 
-        btn_row = ttk.Frame(parent)
-        btn_row.pack(fill=tk.X, pady=(0, 8))
-        self.analyze_btn = ttk.Button(btn_row, text="分析并绘图", command=self._run_analysis_async)
-        self.analyze_btn.pack(side=tk.LEFT)
-        ttk.Button(btn_row, text="清空结果", command=self._clear_result).pack(side=tk.LEFT, padx=(8, 0))
-
-        export_row = ttk.Frame(parent)
-        export_row.pack(fill=tk.X, pady=(0, 10))
-        ttk.Label(export_row, text="导出语言").pack(side=tk.LEFT)
-        ttk.Combobox(export_row, textvariable=self.export_lang_var, values=("中文", "English"), state="readonly", width=10).pack(
-            side=tk.LEFT, padx=(8, 12)
+        action_box = ttk.LabelFrame(parent, text="操作与导出", padding=10)
+        action_box.pack(fill=tk.X, pady=(0, 10))
+        self.analyze_btn = ttk.Button(action_box, text="分析并绘图", command=self._run_analysis_async)
+        self.analyze_btn.grid(row=0, column=0, sticky="ew", padx=(0, 8), pady=(0, 6))
+        ttk.Button(action_box, text="清空结果", command=self._clear_result).grid(row=0, column=1, sticky="ew", padx=(0, 12), pady=(0, 6))
+        ttk.Label(action_box, text="导出语言").grid(row=0, column=2, sticky="e", pady=(0, 6))
+        ttk.Combobox(action_box, textvariable=self.export_lang_var, values=("中文", "English"), state="readonly", width=9).grid(
+            row=0, column=3, sticky="ew", padx=(8, 8), pady=(0, 6)
         )
-        ttk.Button(export_row, text="导出图片...", command=self._export_plots).pack(side=tk.LEFT)
+        ttk.Button(action_box, text="导出图片...", command=self._export_plots).grid(row=0, column=4, sticky="ew", pady=(0, 6))
 
-        export_content_box = ttk.LabelFrame(parent, text="导出内容", padding=10)
-        export_content_box.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(action_box, text="导出内容").grid(row=1, column=0, sticky="w", pady=(2, 0))
         export_items = [
             ("tension", "张力", True),
             ("high", "高张力", False),
@@ -231,13 +252,14 @@ class MonitorAnalyzerApp:
         for i, (key, text, default) in enumerate(export_items):
             var = tk.BooleanVar(value=default)
             self._export_bool_vars[key] = var
-            ttk.Checkbutton(export_content_box, text=text, variable=var).grid(
-                row=i // 2, column=i % 2, sticky="w", padx=(0, 16), pady=2
+            ttk.Checkbutton(action_box, text=text, variable=var).grid(
+                row=1, column=i + 1, sticky="w", padx=(0, 10), pady=(2, 0)
             )
+        action_box.columnconfigure(3, weight=1)
 
         result_box = ttk.LabelFrame(parent, text="结果摘要", padding=10)
         result_box.pack(fill=tk.BOTH, expand=True)
-        self.summary_text = tk.Text(result_box, width=44, height=14, wrap=tk.WORD)
+        self.summary_text = tk.Text(result_box, width=44, height=9, wrap=tk.WORD)
         summary_scroll = ttk.Scrollbar(result_box, orient=tk.VERTICAL, command=self.summary_text.yview)
         self.summary_text.configure(yscrollcommand=summary_scroll.set)
         self.summary_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -555,6 +577,10 @@ class MonitorAnalyzerApp:
         options = PlotOptions(
             tension_y_min=f("tension_y_min"),
             tension_y_max=f("tension_y_max"),
+            high_tension_y_min=f("high_tension_y_min"),
+            high_tension_y_max=f("high_tension_y_max"),
+            low_tension_y_min=f("low_tension_y_min"),
+            low_tension_y_max=f("low_tension_y_max"),
             mu_y_min=f("mu_y_min"),
             mu_y_max=f("mu_y_max"),
             show_mu=bool(self._plot_bool_vars["show_mu"].get()),
@@ -1158,9 +1184,16 @@ class MonitorAnalyzerApp:
             return "avg"
         return "tension"
 
-    def _apply_plot_preview_tension_limits(self, options: PlotOptions) -> None:
-        lo = options.tension_y_min
-        hi = options.tension_y_max
+    def _apply_plot_preview_tension_limits(self, options: PlotOptions, kind: str) -> None:
+        if kind == "high":
+            lo = options.high_tension_y_min
+            hi = options.high_tension_y_max
+        elif kind == "low":
+            lo = options.low_tension_y_min
+            hi = options.low_tension_y_max
+        else:
+            lo = options.tension_y_min
+            hi = options.tension_y_max
         if lo is None and hi is None:
             return
         current_lo, current_hi = self.ax_plot_preview.get_ylim()
@@ -1176,6 +1209,7 @@ class MonitorAnalyzerApp:
         max_points: int,
         labels: Dict[str, str],
         options: PlotOptions,
+        kind: str,
     ) -> None:
         tx, yy = downsample_for_plot(data.t_s, y, max_points)
         self.ax_plot_preview.clear()
@@ -1183,7 +1217,7 @@ class MonitorAnalyzerApp:
         self.ax_plot_preview.set_title(title)
         self.ax_plot_preview.set_ylabel(labels["tension"])
         self.ax_plot_preview.set_xlabel(labels["t"])
-        self._apply_plot_preview_tension_limits(options)
+        self._apply_plot_preview_tension_limits(options, kind)
         self.ax_plot_preview.legend(loc="upper center", bbox_to_anchor=(0.5, -0.20), ncol=1, frameon=False)
 
     def _update_plots(self, data: MonitorData, result: AnalysisResult) -> None:
@@ -1196,13 +1230,13 @@ class MonitorAnalyzerApp:
             plot_mu_axis(self.ax_plot_preview, data, result, max_points, labels, options)
             self.figure.tight_layout(rect=[0, 0.18, 1, 1])
         elif kind == "high":
-            self._plot_single_tension_preview(data, result.display_t_high, labels["th"], labels["th"], "tab:blue", max_points, labels, options)
+            self._plot_single_tension_preview(data, result.display_t_high, labels["th"], labels["th"], "tab:blue", max_points, labels, options, kind)
             self.figure.tight_layout(rect=[0, 0.12, 1, 1])
         elif kind == "low":
-            self._plot_single_tension_preview(data, result.display_t_low, labels["tl"], labels["tl"], "tab:orange", max_points, labels, options)
+            self._plot_single_tension_preview(data, result.display_t_low, labels["tl"], labels["tl"], "tab:orange", max_points, labels, options, kind)
             self.figure.tight_layout(rect=[0, 0.12, 1, 1])
         elif kind == "avg":
-            self._plot_single_tension_preview(data, result.display_t_avg, labels["ta"], labels["ta"], "tab:green", max_points, labels, options)
+            self._plot_single_tension_preview(data, result.display_t_avg, labels["ta"], labels["ta"], "tab:green", max_points, labels, options, kind)
             self.figure.tight_layout(rect=[0, 0.12, 1, 1])
         else:
             plot_tension_axis(self.ax_plot_preview, data, result, max_points, labels, options)
