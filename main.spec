@@ -1,5 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_submodules
+
 local_hiddenimports = [
     'analysis',
     'app',
@@ -7,13 +9,18 @@ local_hiddenimports = [
     'models',
     'optimization',
     'plotting',
+    'scipy',
+    'scipy._lib',
+    'scipy._lib.messagestream',
+    'scipy.ndimage',
+    'scipy.ndimage._filters',
     'sqlite3',
     'tkinter',
     'tkinter.filedialog',
     'tkinter.messagebox',
     'matplotlib.backends.backend_tkagg',
     'matplotlib.backends.backend_agg',
-]
+] + collect_submodules('scipy.ndimage')
 
 
 a = Analysis(

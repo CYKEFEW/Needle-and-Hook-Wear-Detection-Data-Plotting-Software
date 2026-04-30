@@ -1,6 +1,10 @@
 from typing import Optional
 
 import numpy as np
+try:
+    from scipy.ndimage import median_filter
+except ImportError as exc:
+    raise ImportError("数据优化加速需要 SciPy。请先运行: pip install -r requirements.txt") from exc
 
 from analysis import resolve_fs_hz
 from models import MonitorData, OptimizedData, OptimizationParams
@@ -40,6 +44,18 @@ def _window_samples(window_s: float, fs_hz: float, minimum: int = 1, odd: bool =
     if odd and n % 2 == 0:
         n += 1
     return n
+
+
+def _odd_window_samples(window_samples: int, minimum: int = 1) -> int:
+    n = max(int(minimum), int(window_samples))
+    if n % 2 == 0:
+        n += 1
+    return n
+
+
+def _rolling_median(values: np.ndarray, window_samples: int, minimum: int = 1) -> np.ndarray:
+    window = _odd_window_samples(window_samples, minimum=minimum)
+    return median_filter(np.asarray(values, dtype=float), size=window, mode="nearest")
 
 
 def _fill_nan_linear(values: np.ndarray) -> np.ndarray:
@@ -85,28 +101,14 @@ def remove_extreme_outliers_linear(
     if force_mask is not None:
         outlier |= np.asarray(force_mask, dtype=bool)
 
-    half = max(3, int(window_samples) // 2)
+    window = _odd_window_samples(window_samples, minimum=7)
     sigma = max(2.5, float(n_sigma))
     scale = 1.4826
 
     for _ in range(max(1, int(iterations))):
         work, _ = _replace_mask_linear(arr, outlier)
-        residuals: list[float] = []
-        local_median = np.zeros(len(arr), dtype=float)
-
-        for i in range(len(arr)):
-            start = max(0, i - half)
-            end = min(len(arr), i + half + 1)
-            window = np.concatenate((work[start:i], work[i + 1 : end]))
-            window = window[np.isfinite(window)]
-            if len(window) < 4:
-                local_median[i] = work[i]
-                continue
-            med = float(np.median(window))
-            local_median[i] = med
-            residuals.append(abs(float(work[i]) - med))
-
-        residual_arr = np.asarray(residuals, dtype=float)
+        local_median = _rolling_median(work, window, minimum=7)
+        residual_arr = np.abs(work - local_median)
         residual_arr = residual_arr[np.isfinite(residual_arr)]
         if residual_arr.size == 0:
             break
@@ -207,22 +209,13 @@ def _smooth_window_samples(base_window_s: float, fs_hz: float, strength_pct: flo
 def hampel_filter(values: np.ndarray, window_samples: int, n_sigma: float) -> tuple[np.ndarray, int]:
     arr = _fill_nan_linear(values)
     out = arr.copy()
-    half = max(1, int(window_samples) // 2)
-    replaced = 0
     scale = 1.4826
-    for i in range(len(arr)):
-        start = max(0, i - half)
-        end = min(len(arr), i + half + 1)
-        window = arr[start:end]
-        med = float(np.median(window))
-        mad = float(np.median(np.abs(window - med)))
-        threshold = float(n_sigma) * scale * mad
-        if threshold <= 1e-12:
-            continue
-        if abs(arr[i] - med) > threshold:
-            out[i] = med
-            replaced += 1
-    return out, replaced
+    med = _rolling_median(arr, window_samples, minimum=3)
+    mad = _rolling_median(np.abs(arr - med), window_samples, minimum=3)
+    threshold = float(n_sigma) * scale * mad
+    mask = (threshold > 1e-12) & (np.abs(arr - med) > threshold)
+    out[mask] = med[mask]
+    return out, int(mask.sum())
 
 
 def moving_average(values: np.ndarray, window_samples: int) -> np.ndarray:

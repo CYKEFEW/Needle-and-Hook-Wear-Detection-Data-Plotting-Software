@@ -10,7 +10,7 @@
 - 绘图区预览支持切换显示：`张力`、`高张力`、`低张力`、`平均张力`、`μ`。
 - 绘图区预览语言默认中文，可切换英文；该设置不影响导出图片语言。
 - Y 轴上下限支持输入数字或 `Auto` 自适应。
-- `张力`、`高张力`、`低张力`、`μ` 支持独立 Y 轴范围控制；`平均张力` 沿用 `张力` 范围。
+- `张力`、`高张力`、`低张力`、`平均张力`、`μ` 支持独立坐标范围控制。
 - `μ`、稳定段、基线、阈值、`tlife` 支持独立开关显示。
 - `q=0` 数据点不参与稳定段和 `tlife` 计算；绘图显示时用线性插值替换。
 - 连续 `q=0` 超过 `最大容忍中断 Wbreak` 时停止绘图，避免使用不可信数据。
@@ -69,6 +69,8 @@ threshold = sigma * 1.4826 * MAD
 
 “去毛刺力度”滑动条会影响 Hampel 阈值和分段分位数边界。力度越高，算法越激进，更容易替换尖峰。
 
+实现上，明显离群点检测和 Hampel 滤波中的滚动中位数由 SciPy 加速执行。若环境缺少 SciPy，程序会在启动时报错并提示安装依赖。
+
 ### 3. 自动平滑
 
 平滑受“自动平滑曲线”复选框控制，未启用时跳过。
@@ -122,9 +124,16 @@ mu = ln(t_high_N / t_low_N) / theta
 - `analysis.py`：稳定段、基线、阈值和 `tlife` 计算。
 - `plotting.py`：Matplotlib 绘图和图片导出。
 - `optimization.py`：包角反推、去毛刺、平滑、优化数据生成和包角重算。
+- `requirements.txt`：运行和打包依赖。
 - `database/test`：测试数据库样例。
 
 ## 运行
+
+首次使用先安装依赖：
+
+```bash
+pip install -r requirements.txt
+```
 
 ```bash
 python needle_hook_data_plot.py
@@ -151,6 +160,8 @@ pyinstaller main.spec
 ```
 
 `main.spec` 会显式包含本地模块、Tkinter/Matplotlib 后端依赖，并把 `database` 目录和 `README.md` 作为数据文件打包。
+
+打包前同样需要先安装 `requirements.txt` 中的依赖，特别是数据优化加速所需的 SciPy。
 
 ## 数据库字段要求
 
