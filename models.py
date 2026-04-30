@@ -1,5 +1,5 @@
-from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -68,7 +68,16 @@ class AnalysisResult:
 
 
 @dataclass
+class AxisRange:
+    x_min: Optional[float] = None
+    x_max: Optional[float] = None
+    y_min: Optional[float] = None
+    y_max: Optional[float] = None
+
+
+@dataclass
 class PlotOptions:
+    axis_ranges: Dict[str, AxisRange] = field(default_factory=dict)
     tension_y_min: Optional[float] = None
     tension_y_max: Optional[float] = None
     high_tension_y_min: Optional[float] = None
@@ -95,6 +104,8 @@ class OptimizationParams:
     sample_rate_hz: float = 0.0
     hampel_strength_pct: float = 50.0
     smooth_strength_pct: float = 50.0
+    quantile_max_run_s: float = 10.0
+    quantile_segment_s: float = 600.0
 
     def normalized(self) -> "OptimizationParams":
         return OptimizationParams(
@@ -107,6 +118,8 @@ class OptimizationParams:
             sample_rate_hz=max(0.0, float(self.sample_rate_hz)),
             hampel_strength_pct=min(100.0, max(0.0, float(self.hampel_strength_pct))),
             smooth_strength_pct=min(100.0, max(0.0, float(self.smooth_strength_pct))),
+            quantile_max_run_s=max(0.0, float(self.quantile_max_run_s)),
+            quantile_segment_s=max(1.0, float(self.quantile_segment_s)),
         )
 
 

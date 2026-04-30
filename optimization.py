@@ -123,22 +123,64 @@ def remove_extreme_outliers_linear(
     return _replace_mask_linear(arr, outlier)
 
 
-def remove_quantile_outliers_linear(values: np.ndarray, low_pct: float = 0.5, high_pct: float = 99.5) -> tuple[np.ndarray, int]:
+def _short_true_runs(mask: np.ndarray, max_run_samples: int) -> np.ndarray:
+    mask = np.asarray(mask, dtype=bool)
+    if not bool(mask.any()):
+        return mask.copy()
+    max_run_samples = max(0, int(max_run_samples))
+    out = np.zeros(len(mask), dtype=bool)
+    i = 0
+    while i < len(mask):
+        if not mask[i]:
+            i += 1
+            continue
+        j = i + 1
+        while j < len(mask) and mask[j]:
+            j += 1
+        if (j - i) <= max_run_samples:
+            out[i:j] = True
+        i = j
+    return out
+
+
+def remove_quantile_outliers_linear(
+    values: np.ndarray,
+    low_pct: float = 0.5,
+    high_pct: float = 99.5,
+    max_run_samples: Optional[int] = None,
+    segment_samples: Optional[int] = None,
+) -> tuple[np.ndarray, int]:
     arr = _fill_nan_linear(values)
-    finite = arr[np.isfinite(arr)]
-    if finite.size < 20:
+    if len(arr) < 20:
         return arr, 0
 
-    low = float(np.percentile(finite, low_pct))
-    high = float(np.percentile(finite, high_pct))
-    median = float(np.median(finite))
-    mad = float(np.median(np.abs(finite - median)))
-    robust_sigma = max(1.4826 * mad, 1e-9)
-    low = max(low, median - 4.0 * robust_sigma)
-    high = min(high, median + 4.0 * robust_sigma)
-    if high <= low:
+    if segment_samples is None or int(segment_samples) <= 0:
+        segment_samples = len(arr)
+    segment_samples = max(20, int(segment_samples))
+    mask = np.zeros(len(arr), dtype=bool)
+
+    for start in range(0, len(arr), segment_samples):
+        end = min(len(arr), start + segment_samples)
+        segment = arr[start:end]
+        finite = segment[np.isfinite(segment)]
+        if finite.size < 20:
+            continue
+        low = float(np.percentile(finite, low_pct))
+        high = float(np.percentile(finite, high_pct))
+        median = float(np.median(finite))
+        mad = float(np.median(np.abs(finite - median)))
+        robust_sigma = max(1.4826 * mad, 1e-9)
+        low = max(low, median - 4.0 * robust_sigma)
+        high = min(high, median + 4.0 * robust_sigma)
+        if high <= low:
+            continue
+        mask[start:end] = (segment < low) | (segment > high)
+
+    if not bool(mask.any()):
         return arr, 0
-    return _replace_mask_linear(arr, (arr < low) | (arr > high))
+    if max_run_samples is not None:
+        mask = _short_true_runs(mask, max_run_samples)
+    return _replace_mask_linear(arr, mask)
 
 
 def _strength_fraction(strength_pct: float) -> float:
@@ -208,14 +250,20 @@ def optimize_monitor_data(data: MonitorData, params: OptimizationParams) -> Opti
         win = _window_samples(params.hampel_window_s, fs_hz, minimum=3, odd=True)
         sigma = _despike_sigma(params.hampel_sigma, params.hampel_strength_pct)
         quantile_edge = _despike_quantile_edge(params.hampel_strength_pct, 0.5)
+        quantile_max_run = _window_samples(params.quantile_max_run_s, fs_hz, minimum=1, odd=False)
+        quantile_segment = _window_samples(params.quantile_segment_s, fs_hz, minimum=20, odd=False)
         high, high_extreme_spikes = remove_extreme_outliers_linear(high, win, sigma, force_mask=invalid_quality)
         low, low_extreme_spikes = remove_extreme_outliers_linear(low, win, sigma, force_mask=invalid_quality)
         high, high_hampel_spikes = hampel_filter(high, win, sigma)
         low, low_hampel_spikes = hampel_filter(low, win, sigma)
         high_spikes = high_extreme_spikes + high_hampel_spikes
         low_spikes = low_extreme_spikes + low_hampel_spikes
-        high, high_quantile_spikes = remove_quantile_outliers_linear(high, quantile_edge, 100.0 - quantile_edge)
-        low, low_quantile_spikes = remove_quantile_outliers_linear(low, quantile_edge, 100.0 - quantile_edge)
+        high, high_quantile_spikes = remove_quantile_outliers_linear(
+            high, quantile_edge, 100.0 - quantile_edge, max_run_samples=quantile_max_run, segment_samples=quantile_segment
+        )
+        low, low_quantile_spikes = remove_quantile_outliers_linear(
+            low, quantile_edge, 100.0 - quantile_edge, max_run_samples=quantile_max_run, segment_samples=quantile_segment
+        )
         high_spikes += high_quantile_spikes
         low_spikes += low_quantile_spikes
 
@@ -230,8 +278,14 @@ def optimize_monitor_data(data: MonitorData, params: OptimizationParams) -> Opti
             high_spikes += high_post_spikes
             low_spikes += low_post_spikes
             post_edge = _despike_quantile_edge(params.hampel_strength_pct, 0.2)
-            high, high_post_quantile_spikes = remove_quantile_outliers_linear(high, post_edge, 100.0 - post_edge)
-            low, low_post_quantile_spikes = remove_quantile_outliers_linear(low, post_edge, 100.0 - post_edge)
+            post_quantile_max_run = _window_samples(params.quantile_max_run_s, fs_hz, minimum=1, odd=False)
+            post_quantile_segment = _window_samples(params.quantile_segment_s, fs_hz, minimum=20, odd=False)
+            high, high_post_quantile_spikes = remove_quantile_outliers_linear(
+                high, post_edge, 100.0 - post_edge, max_run_samples=post_quantile_max_run, segment_samples=post_quantile_segment
+            )
+            low, low_post_quantile_spikes = remove_quantile_outliers_linear(
+                low, post_edge, 100.0 - post_edge, max_run_samples=post_quantile_max_run, segment_samples=post_quantile_segment
+            )
             high_spikes += high_post_quantile_spikes
             low_spikes += low_post_quantile_spikes
 

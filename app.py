@@ -13,13 +13,15 @@ from tkinter import filedialog, messagebox, ttk
 
 from analysis import analyze_monitor_data, interpolate_invalid_samples, summary_dict, summary_lines
 from db_io import DEFAULT_DB_PATH, export_optimized_db, export_wrap_angle_db, load_monitor_db
-from models import AnalysisParams, AnalysisResult, MonitorData, OptimizationParams, OptimizedData, PlotOptions
+from models import AnalysisParams, AnalysisResult, AxisRange, MonitorData, OptimizationParams, OptimizedData, PlotOptions
 from optimization import infer_wrap_angle_rad, optimize_monitor_data, recompute_mu_for_wrap_angle
 from plotting import (
     downsample_for_plot,
     export_monitor_plots,
+    export_optimization_plots,
     plot_labels,
     plot_mu_axis,
+    plot_optimization_comparison_axis,
     plot_tension_axis,
     validate_plot_options,
 )
@@ -29,7 +31,129 @@ matplotlib.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Noto San
 matplotlib.rcParams["axes.unicode_minus"] = False
 
 
+class RangeSlider(tk.Canvas):
+    def __init__(self, parent, command=None, width: int = 300, height: int = 34, **kwargs) -> None:
+        super().__init__(parent, width=width, height=height, highlightthickness=0, **kwargs)
+        self.command = command
+        self.bound_min = 0.0
+        self.bound_max = 1.0
+        self.value_min = 0.0
+        self.value_max = 1.0
+        self._pad = 14
+        self._mode: Optional[str] = None
+        self._drag_start_value = 0.0
+        self._drag_start_min = 0.0
+        self._drag_start_max = 1.0
+        self.bind("<Configure>", lambda _event: self._draw())
+        self.bind("<Button-1>", self._on_press)
+        self.bind("<B1-Motion>", self._on_drag)
+        self.bind("<ButtonRelease-1>", self._on_release)
+        self._draw()
+
+    def set_bounds(self, lo: float, hi: float) -> None:
+        lo = float(lo)
+        hi = float(hi)
+        if not np.isfinite(lo) or not np.isfinite(hi):
+            lo, hi = 0.0, 1.0
+        if hi <= lo:
+            pad = 1.0 if lo == 0.0 else abs(lo) * 0.05
+            lo -= pad
+            hi += pad
+        self.bound_min = lo
+        self.bound_max = hi
+        self.set_values(self.value_min, self.value_max, emit=False)
+
+    def set_values(self, lo: float, hi: float, emit: bool = False) -> None:
+        lo = self._clamp(float(lo))
+        hi = self._clamp(float(hi))
+        if hi < lo:
+            lo, hi = hi, lo
+        self.value_min = lo
+        self.value_max = hi
+        self._draw()
+        if emit and self.command is not None:
+            self.command(self.value_min, self.value_max)
+
+    def _clamp(self, value: float) -> float:
+        if not np.isfinite(value):
+            return self.bound_min
+        return min(self.bound_max, max(self.bound_min, value))
+
+    def _value_to_x(self, value: float) -> float:
+        width = max(1, self.winfo_width())
+        usable = max(1, width - 2 * self._pad)
+        ratio = (self._clamp(value) - self.bound_min) / max(1e-12, self.bound_max - self.bound_min)
+        return self._pad + ratio * usable
+
+    def _x_to_value(self, x: float) -> float:
+        width = max(1, self.winfo_width())
+        usable = max(1, width - 2 * self._pad)
+        ratio = (float(x) - self._pad) / usable
+        return self._clamp(self.bound_min + ratio * (self.bound_max - self.bound_min))
+
+    def _draw(self) -> None:
+        self.delete("all")
+        width = max(1, self.winfo_width())
+        height = max(1, self.winfo_height())
+        y = height / 2
+        x0 = self._pad
+        x1 = width - self._pad
+        lo_x = self._value_to_x(self.value_min)
+        hi_x = self._value_to_x(self.value_max)
+        self.create_line(x0, y, x1, y, fill="#c8c8c8", width=4, capstyle=tk.ROUND)
+        self.create_line(lo_x, y, hi_x, y, fill="#2b7de9", width=5, capstyle=tk.ROUND)
+        for x in (lo_x, hi_x):
+            self.create_oval(x - 6, y - 8, x + 6, y + 8, fill="#ffffff", outline="#2b7de9", width=2)
+
+    def _on_press(self, event) -> None:
+        lo_x = self._value_to_x(self.value_min)
+        hi_x = self._value_to_x(self.value_max)
+        x = float(event.x)
+        handle_threshold = 10.0
+        if abs(x - lo_x) <= handle_threshold and abs(x - lo_x) <= abs(x - hi_x):
+            self._mode = "min"
+        elif abs(x - hi_x) <= handle_threshold:
+            self._mode = "max"
+        elif lo_x < x < hi_x:
+            self._mode = "range"
+        else:
+            self._mode = "min" if abs(x - lo_x) < abs(x - hi_x) else "max"
+        self._drag_start_value = self._x_to_value(x)
+        self._drag_start_min = self.value_min
+        self._drag_start_max = self.value_max
+
+    def _on_drag(self, event) -> None:
+        if self._mode is None:
+            return
+        value = self._x_to_value(float(event.x))
+        lo = self.value_min
+        hi = self.value_max
+        if self._mode == "min":
+            lo = min(value, self.value_max)
+        elif self._mode == "max":
+            hi = max(value, self.value_min)
+        else:
+            delta = value - self._drag_start_value
+            width = self._drag_start_max - self._drag_start_min
+            lo = self._drag_start_min + delta
+            hi = self._drag_start_max + delta
+            if lo < self.bound_min:
+                lo = self.bound_min
+                hi = lo + width
+            if hi > self.bound_max:
+                hi = self.bound_max
+                lo = hi - width
+        self.set_values(lo, hi, emit=True)
+
+    def _on_release(self, _event) -> None:
+        self._mode = None
+
+
 class MonitorAnalyzerApp:
+    _RANGE_FIELDS = ("x_min", "x_max", "y_min", "y_max")
+    _PLOT_RANGE_KEYS = ("tension", "high", "low", "avg", "mu")
+    _OPT_RANGE_KEYS = ("high", "low", "avg", "mu")
+
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("针钩监测数据分析与绘图")
@@ -61,6 +185,15 @@ class MonitorAnalyzerApp:
         self._plot_limit_vars: Dict[str, tk.StringVar] = {}
         self._plot_bool_vars: Dict[str, tk.BooleanVar] = {}
         self._export_bool_vars: Dict[str, tk.BooleanVar] = {}
+        self._axis_range_states = {
+            "plot": self._new_axis_range_state(self._PLOT_RANGE_KEYS),
+            "opt": self._new_axis_range_state(self._OPT_RANGE_KEYS),
+        }
+        self._axis_range_entry_vars: Dict[str, Dict[str, tk.StringVar]] = {}
+        self._axis_range_sliders: Dict[str, Dict[str, RangeSlider]] = {}
+        self._axis_range_error_vars: Dict[str, tk.StringVar] = {}
+        self._active_axis_range_key = {"plot": "tension", "opt": "high"}
+        self._syncing_axis_range_controls = False
 
         self.opt_db_path_var = tk.StringVar(value=default_db)
         self.opt_table_name_var = tk.StringVar(value="Data")
@@ -74,12 +207,16 @@ class MonitorAnalyzerApp:
         self.opt_smooth_strength_text_var = tk.StringVar(value="50%")
         self.opt_hampel_window_var = tk.StringVar(value="1.0")
         self.opt_hampel_sigma_var = tk.StringVar(value="3.0")
+        self.opt_quantile_max_run_var = tk.StringVar(value="10")
+        self.opt_quantile_segment_var = tk.StringVar(value="600")
         self.opt_smooth_window_var = tk.StringVar(value="0.5")
         self.opt_sample_rate_var = tk.StringVar(value="0")
         self.opt_preview_mode_var = tk.StringVar(value="高张力")
         self.opt_status_var = tk.StringVar(value="选择数据库后可反推包角、生成优化预览并导出。")
 
         self.opt_preview_lang_var = tk.StringVar(value="中文")
+        self.opt_export_lang_var = tk.StringVar(value="中文")
+        self._opt_export_bool_vars: Dict[str, tk.BooleanVar] = {}
         self.wrap_db_path_var = tk.StringVar(value=default_db)
         self.wrap_table_name_var = tk.StringVar(value="Data")
         self.wrap_output_path_var = tk.StringVar(value="")
@@ -154,6 +291,199 @@ class MonitorAnalyzerApp:
         if delta != 0 and hasattr(self, "viewport_canvas"):
             self.viewport_canvas.yview_scroll(delta, "units")
 
+    def _new_axis_range_state(self, keys) -> Dict[str, Dict[str, str]]:
+        return {key: {field: "Auto" for field in self._RANGE_FIELDS} for key in keys}
+
+    def _build_axis_range_panel(self, parent: ttk.Frame, scope: str) -> None:
+        frame = ttk.LabelFrame(parent, text="坐标范围", padding=8)
+        frame.pack(fill=tk.X, pady=(8, 0))
+        entry_vars = {field: tk.StringVar(value="Auto") for field in self._RANGE_FIELDS}
+        sliders: Dict[str, RangeSlider] = {}
+        error_var = tk.StringVar(value="")
+        self._axis_range_entry_vars[scope] = entry_vars
+        self._axis_range_sliders[scope] = sliders
+        self._axis_range_error_vars[scope] = error_var
+
+        rows = [
+            ("X轴范围", "x", "x_min", "x_max", "自适应X轴"),
+            ("Y轴范围", "y", "y_min", "y_max", "自适应Y轴"),
+        ]
+        for row, (axis_label, axis_key, min_field, max_field, auto_text) in enumerate(rows):
+            ttk.Label(frame, text=axis_label).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=2)
+            ttk.Label(frame, text="最小").grid(row=row, column=1, sticky="e", pady=2)
+            min_entry = ttk.Entry(frame, textvariable=entry_vars[min_field], width=10)
+            min_entry.grid(row=row, column=2, sticky="ew", padx=(4, 6), pady=2)
+            min_entry.bind("<Return>", lambda _event, s=scope: self._on_axis_range_entry_changed(s))
+            min_entry.bind("<FocusOut>", lambda _event, s=scope: self._on_axis_range_entry_changed(s))
+            slider = RangeSlider(
+                frame,
+                command=lambda lo, hi, s=scope, axis=axis_key: self._on_axis_range_slider_changed(s, axis, lo, hi),
+            )
+            slider.grid(row=row, column=3, sticky="ew", padx=(0, 8), pady=2)
+            sliders[axis_key] = slider
+
+            ttk.Label(frame, text="最大").grid(row=row, column=4, sticky="e", pady=2)
+            max_entry = ttk.Entry(frame, textvariable=entry_vars[max_field], width=10)
+            max_entry.grid(row=row, column=5, sticky="ew", padx=(4, 6), pady=2)
+            max_entry.bind("<Return>", lambda _event, s=scope: self._on_axis_range_entry_changed(s))
+            max_entry.bind("<FocusOut>", lambda _event, s=scope: self._on_axis_range_entry_changed(s))
+
+            ttk.Button(frame, text=auto_text, command=lambda s=scope, axis=axis_label[0].lower(): self._set_axis_auto(s, axis)).grid(
+                row=row, column=6, sticky="ew", pady=2
+            )
+        frame.columnconfigure(3, weight=1)
+        ttk.Label(frame, textvariable=error_var, foreground="#b00020").grid(row=2, column=0, columnspan=7, sticky="w", pady=(4, 0))
+        self._load_visible_axis_range(scope)
+
+    def _current_axis_range_key(self, scope: str) -> str:
+        return self._plot_preview_kind() if scope == "plot" else self._optimization_preview_text(self.opt_preview_mode_var.get().strip())["key"]
+
+    def _range_state(self, scope: str) -> Dict[str, Dict[str, str]]:
+        return self._axis_range_states[scope]
+
+    def _load_visible_axis_range(self, scope: str) -> None:
+        if scope not in self._axis_range_entry_vars:
+            return
+        key = self._active_axis_range_key[scope]
+        state = self._range_state(scope)[key]
+        self._syncing_axis_range_controls = True
+        try:
+            for field in self._RANGE_FIELDS:
+                self._axis_range_entry_vars[scope][field].set(state[field])
+        finally:
+            self._syncing_axis_range_controls = False
+
+    def _save_visible_axis_range(self, scope: str, key: Optional[str] = None) -> None:
+        if scope not in self._axis_range_entry_vars:
+            return
+        key = key or self._active_axis_range_key[scope]
+        state = self._range_state(scope)[key]
+        for field in self._RANGE_FIELDS:
+            state[field] = self._axis_range_entry_vars[scope][field].get().strip() or "Auto"
+
+    def _parse_axis_range_value(self, text: str) -> Optional[float]:
+        text = str(text).strip()
+        if text == "" or text.lower() == "auto":
+            return None
+        return float(text)
+
+    def _axis_range_from_state(self, scope: str, key: str) -> AxisRange:
+        state = self._range_state(scope)[key]
+        return AxisRange(
+            x_min=self._parse_axis_range_value(state["x_min"]),
+            x_max=self._parse_axis_range_value(state["x_max"]),
+            y_min=self._parse_axis_range_value(state["y_min"]),
+            y_max=self._parse_axis_range_value(state["y_max"]),
+        )
+
+    def _axis_ranges_from_state(self, scope: str) -> Dict[str, AxisRange]:
+        if scope in self._axis_range_entry_vars:
+            self._save_visible_axis_range(scope)
+        return {key: self._axis_range_from_state(scope, key) for key in self._range_state(scope)}
+
+    def _format_axis_range_value(self, value: float) -> str:
+        return f"{float(value):.6g}"
+
+    def _refresh_axis_range_scope(self, scope: str) -> None:
+        if scope == "plot":
+            self._refresh_current_plot()
+        else:
+            self._refresh_optimization_preview_plot()
+
+    def _set_axis_range_error(self, scope: str, message: str = "") -> None:
+        if scope in self._axis_range_error_vars:
+            self._axis_range_error_vars[scope].set(message)
+
+    def _show_range_error(self, scope: str, exc: Exception) -> None:
+        self._set_axis_range_error(scope, str(exc))
+
+    def _clear_range_error(self, scope: str) -> None:
+        self._set_axis_range_error(scope, "")
+
+    def _on_axis_range_entry_changed(self, scope: str) -> None:
+        if self._syncing_axis_range_controls:
+            return
+        self._save_visible_axis_range(scope)
+        self._refresh_axis_range_scope(scope)
+
+    def _on_axis_range_slider_changed(self, scope: str, axis: str, lo: float, hi: float) -> None:
+        if self._syncing_axis_range_controls:
+            return
+        self._clear_range_error(scope)
+        min_field, max_field = ("x_min", "x_max") if axis == "x" else ("y_min", "y_max")
+        self._axis_range_entry_vars[scope][min_field].set(self._format_axis_range_value(lo))
+        self._axis_range_entry_vars[scope][max_field].set(self._format_axis_range_value(hi))
+        self._save_visible_axis_range(scope)
+        self._refresh_axis_range_scope(scope)
+
+    def _set_axis_auto(self, scope: str, axis: str) -> None:
+        fields = ("x_min", "x_max") if axis == "x" else ("y_min", "y_max")
+        for field in fields:
+            self._axis_range_entry_vars[scope][field].set("Auto")
+        self._save_visible_axis_range(scope)
+        self._refresh_axis_range_scope(scope)
+
+    def _axis_data_bounds(self, ax, axis: str) -> Tuple[float, float]:
+        values = []
+        for line in ax.lines:
+            if not line.get_visible():
+                continue
+            data = np.asarray(line.get_xdata() if axis == "x" else line.get_ydata(), dtype=float)
+            if axis == "x" and data.size <= 2:
+                continue
+            data = data[np.isfinite(data)]
+            if data.size:
+                values.append(data)
+        if values:
+            merged = np.concatenate(values)
+            lo = float(np.nanmin(merged))
+            hi = float(np.nanmax(merged))
+        else:
+            lo, hi = (float(v) for v in (ax.get_xlim() if axis == "x" else ax.get_ylim()))
+        if not np.isfinite(lo) or not np.isfinite(hi):
+            lo, hi = 0.0, 1.0
+        if hi <= lo:
+            pad = 1.0 if lo == 0.0 else abs(lo) * 0.05
+            lo -= pad
+            hi += pad
+        return lo, hi
+
+    def _sync_axis_range_controls_from_axis(self, scope: str, key: str, ax) -> None:
+        if scope not in self._axis_range_sliders or self._active_axis_range_key.get(scope) != key:
+            return
+        self._syncing_axis_range_controls = True
+        try:
+            state = self._range_state(scope)[key]
+            for axis_name, min_field, max_field in (("x", "x_min", "x_max"), ("y", "y_min", "y_max")):
+                bound_lo, bound_hi = self._axis_data_bounds(ax, axis_name)
+                axis_lo, axis_hi = (float(v) for v in (ax.get_xlim() if axis_name == "x" else ax.get_ylim()))
+                try:
+                    selected_lo = self._parse_axis_range_value(state[min_field])
+                except Exception:
+                    selected_lo = None
+                try:
+                    selected_hi = self._parse_axis_range_value(state[max_field])
+                except Exception:
+                    selected_hi = None
+                selected_lo = axis_lo if selected_lo is None else selected_lo
+                selected_hi = axis_hi if selected_hi is None else selected_hi
+                self._axis_range_sliders[scope][axis_name].set_bounds(bound_lo, bound_hi)
+                self._axis_range_sliders[scope][axis_name].set_values(selected_lo, selected_hi, emit=False)
+        finally:
+            self._syncing_axis_range_controls = False
+
+    def _on_plot_preview_mode_changed(self) -> None:
+        self._save_visible_axis_range("plot", self._active_axis_range_key["plot"])
+        self._active_axis_range_key["plot"] = self._plot_preview_kind()
+        self._load_visible_axis_range("plot")
+        self._refresh_current_plot()
+
+    def _on_opt_preview_mode_changed(self) -> None:
+        self._save_visible_axis_range("opt", self._active_axis_range_key["opt"])
+        self._active_axis_range_key["opt"] = self._optimization_preview_text(self.opt_preview_mode_var.get().strip())["key"]
+        self._load_visible_axis_range("opt")
+        self._refresh_optimization_preview_plot()
+
     def _build_left_panel(self, parent: ttk.Frame) -> None:
         file_box = ttk.LabelFrame(parent, text="数据源", padding=10)
         file_box.pack(fill=tk.X, pady=(0, 10))
@@ -192,26 +522,6 @@ class MonitorAnalyzerApp:
 
         plot_box = ttk.LabelFrame(parent, text="绘图显示", padding=10)
         plot_box.pack(fill=tk.X, pady=(0, 10))
-        limit_items = [
-            ("张力Y下限", "tension_y_min"),
-            ("张力Y上限", "tension_y_max"),
-            ("高张力Y下限", "high_tension_y_min"),
-            ("高张力Y上限", "high_tension_y_max"),
-            ("低张力Y下限", "low_tension_y_min"),
-            ("低张力Y上限", "low_tension_y_max"),
-            ("μY下限", "mu_y_min"),
-            ("μY上限", "mu_y_max"),
-        ]
-        for i, (label, key) in enumerate(limit_items):
-            row = i // 2
-            col = (i % 2) * 2
-            var = tk.StringVar(value="Auto")
-            self._plot_limit_vars[key] = var
-            ttk.Label(plot_box, text=label).grid(row=row, column=col, sticky="w", pady=2, padx=(0, 6))
-            entry = ttk.Entry(plot_box, textvariable=var, width=12)
-            entry.grid(row=row, column=col + 1, sticky="ew", pady=2, padx=(0, 12))
-            entry.bind("<Return>", lambda _event: self._refresh_current_plot())
-            entry.bind("<FocusOut>", lambda _event: self._refresh_current_plot())
         for i, (key, text) in enumerate(
             [
                 ("show_mu", "μ"),
@@ -225,7 +535,7 @@ class MonitorAnalyzerApp:
             var = tk.BooleanVar(value=True)
             self._plot_bool_vars[key] = var
             ttk.Checkbutton(plot_box, text=text, variable=var, command=self._refresh_current_plot).grid(
-                row=4 + i // 3, column=i % 3, sticky="w", pady=(6 if i < 3 else 2, 2), padx=(0, 12)
+                row=i // 3, column=i % 3, sticky="w", pady=2, padx=(0, 12)
             )
         plot_box.columnconfigure(1, weight=1)
         plot_box.columnconfigure(3, weight=1)
@@ -289,7 +599,7 @@ class MonitorAnalyzerApp:
             width=8,
         )
         self.plot_preview_selector.pack(side=tk.RIGHT)
-        self.plot_preview_selector.bind("<<ComboboxSelected>>", lambda _event: self._refresh_current_plot())
+        self.plot_preview_selector.bind("<<ComboboxSelected>>", lambda _event: self._on_plot_preview_mode_changed())
 
         preview_figsize = tuple(float(v) for v in matplotlib.rcParams["figure.figsize"])
         preview_dpi = float(matplotlib.rcParams["figure.dpi"])
@@ -302,6 +612,7 @@ class MonitorAnalyzerApp:
         self.toolbar = NavigationToolbar2Tk(self.canvas, parent, pack_toolbar=False)
         self.toolbar.update()
         self.toolbar.pack(fill=tk.X)
+        self._build_axis_range_panel(parent, "plot")
         self._draw_placeholder()
 
     def _build_optimization_tab(self, parent: ttk.Frame) -> None:
@@ -336,14 +647,18 @@ class MonitorAnalyzerApp:
         ttk.Entry(param_box, textvariable=self.opt_hampel_window_var, width=18).grid(row=2, column=1, sticky="ew", pady=2, padx=(8, 0))
         ttk.Label(param_box, text="去毛刺阈值 σ").grid(row=3, column=0, sticky="w", pady=2)
         ttk.Entry(param_box, textvariable=self.opt_hampel_sigma_var, width=18).grid(row=3, column=1, sticky="ew", pady=2, padx=(8, 0))
+        ttk.Label(param_box, text="分位修正保护时间 (s)").grid(row=4, column=0, sticky="w", pady=2)
+        ttk.Entry(param_box, textvariable=self.opt_quantile_max_run_var, width=18).grid(row=4, column=1, sticky="ew", pady=2, padx=(8, 0))
+        ttk.Label(param_box, text="分位修正分段时间 (s)").grid(row=5, column=0, sticky="w", pady=2)
+        ttk.Entry(param_box, textvariable=self.opt_quantile_segment_var, width=18).grid(row=5, column=1, sticky="ew", pady=2, padx=(8, 0))
         ttk.Checkbutton(param_box, text="自动平滑曲线", variable=self.opt_smooth_enabled_var).grid(
-            row=4, column=0, columnspan=3, sticky="w", pady=(8, 2)
+            row=6, column=0, columnspan=3, sticky="w", pady=(8, 2)
         )
-        ttk.Label(param_box, text="平滑窗口 (s)").grid(row=5, column=0, sticky="w", pady=2)
-        ttk.Entry(param_box, textvariable=self.opt_smooth_window_var, width=18).grid(row=5, column=1, sticky="ew", pady=2, padx=(8, 0))
-        ttk.Label(param_box, text="采样率 fs (Hz, 0=自动)").grid(row=6, column=0, sticky="w", pady=2)
-        ttk.Entry(param_box, textvariable=self.opt_sample_rate_var, width=18).grid(row=6, column=1, sticky="ew", pady=2, padx=(8, 0))
-        ttk.Label(param_box, text="去毛刺力度").grid(row=7, column=0, sticky="w", pady=(8, 2))
+        ttk.Label(param_box, text="平滑窗口 (s)").grid(row=7, column=0, sticky="w", pady=2)
+        ttk.Entry(param_box, textvariable=self.opt_smooth_window_var, width=18).grid(row=7, column=1, sticky="ew", pady=2, padx=(8, 0))
+        ttk.Label(param_box, text="采样率 fs (Hz, 0=自动)").grid(row=8, column=0, sticky="w", pady=2)
+        ttk.Entry(param_box, textvariable=self.opt_sample_rate_var, width=18).grid(row=8, column=1, sticky="ew", pady=2, padx=(8, 0))
+        ttk.Label(param_box, text="去毛刺力度").grid(row=9, column=0, sticky="w", pady=(8, 2))
         ttk.Scale(
             param_box,
             from_=0,
@@ -353,9 +668,9 @@ class MonitorAnalyzerApp:
             command=lambda _value: self._update_strength_text(
                 self.opt_hampel_strength_var, self.opt_hampel_strength_text_var
             ),
-        ).grid(row=7, column=1, sticky="ew", pady=(8, 2), padx=(8, 0))
-        ttk.Label(param_box, textvariable=self.opt_hampel_strength_text_var, width=6).grid(row=7, column=2, sticky="e", pady=(8, 2))
-        ttk.Label(param_box, text="平滑力度").grid(row=8, column=0, sticky="w", pady=2)
+        ).grid(row=9, column=1, sticky="ew", pady=(8, 2), padx=(8, 0))
+        ttk.Label(param_box, textvariable=self.opt_hampel_strength_text_var, width=6).grid(row=9, column=2, sticky="e", pady=(8, 2))
+        ttk.Label(param_box, text="平滑力度").grid(row=10, column=0, sticky="w", pady=2)
         ttk.Scale(
             param_box,
             from_=0,
@@ -365,8 +680,8 @@ class MonitorAnalyzerApp:
             command=lambda _value: self._update_strength_text(
                 self.opt_smooth_strength_var, self.opt_smooth_strength_text_var
             ),
-        ).grid(row=8, column=1, sticky="ew", pady=2, padx=(8, 0))
-        ttk.Label(param_box, textvariable=self.opt_smooth_strength_text_var, width=6).grid(row=8, column=2, sticky="e", pady=2)
+        ).grid(row=10, column=1, sticky="ew", pady=2, padx=(8, 0))
+        ttk.Label(param_box, textvariable=self.opt_smooth_strength_text_var, width=6).grid(row=10, column=2, sticky="e", pady=2)
         param_box.columnconfigure(1, weight=1)
 
         export_box = ttk.LabelFrame(controls, text="导出", padding=10)
@@ -375,6 +690,23 @@ class MonitorAnalyzerApp:
         self.opt_preview_btn.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         self.opt_export_btn = ttk.Button(export_box, text="导出优化后的db", command=self._export_optimized_db)
         self.opt_export_btn.grid(row=0, column=1, sticky="ew")
+        ttk.Label(export_box, text="对比图语言").grid(row=1, column=0, sticky="w", pady=(8, 2))
+        ttk.Combobox(export_box, textvariable=self.opt_export_lang_var, values=("中文", "English"), state="readonly", width=10).grid(
+            row=1, column=1, sticky="ew", pady=(8, 2)
+        )
+        ttk.Button(export_box, text="导出对比图...", command=self._export_optimization_preview_plots).grid(
+            row=2, column=0, columnspan=2, sticky="ew", pady=(4, 2)
+        )
+        opt_export_items = [
+            ("high", "高张力"),
+            ("low", "低张力"),
+            ("avg", "平均张力"),
+            ("mu", "μ"),
+        ]
+        for i, (key, text) in enumerate(opt_export_items):
+            var = tk.BooleanVar(value=True)
+            self._opt_export_bool_vars[key] = var
+            ttk.Checkbutton(export_box, text=text, variable=var).grid(row=3 + i // 2, column=i % 2, sticky="w", pady=2)
         export_box.columnconfigure(0, weight=1)
         export_box.columnconfigure(1, weight=1)
 
@@ -393,7 +725,7 @@ class MonitorAnalyzerApp:
             width=10,
         )
         self.opt_preview_selector.pack(side=tk.LEFT, padx=(8, 0))
-        self.opt_preview_selector.bind("<<ComboboxSelected>>", lambda _event: self._refresh_optimization_preview_plot())
+        self.opt_preview_selector.bind("<<ComboboxSelected>>", lambda _event: self._on_opt_preview_mode_changed())
         ttk.Label(preview_switch, text="预览语言").pack(side=tk.LEFT, padx=(18, 0))
         self.opt_preview_lang_combo = ttk.Combobox(
             preview_switch,
@@ -405,13 +737,18 @@ class MonitorAnalyzerApp:
         self.opt_preview_lang_combo.pack(side=tk.LEFT, padx=(8, 0))
         self.opt_preview_lang_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_optimization_preview_plot())
 
-        self.opt_figure = Figure(figsize=(10.8, 7.2), dpi=100)
+        opt_figsize = tuple(float(v) for v in matplotlib.rcParams["figure.figsize"])
+        opt_dpi = float(matplotlib.rcParams["figure.dpi"])
+        self.opt_figure = Figure(figsize=opt_figsize, dpi=opt_dpi)
         self.opt_ax_preview = self.opt_figure.add_subplot(111)
         self.opt_preview_canvas = FigureCanvasTkAgg(self.opt_figure, master=preview)
-        self.opt_preview_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        opt_widget = self.opt_preview_canvas.get_tk_widget()
+        opt_widget.configure(width=int(opt_figsize[0] * opt_dpi), height=int(opt_figsize[1] * opt_dpi))
+        opt_widget.pack(anchor="n")
         self.opt_toolbar = NavigationToolbar2Tk(self.opt_preview_canvas, preview, pack_toolbar=False)
         self.opt_toolbar.update()
         self.opt_toolbar.pack(fill=tk.X)
+        self._build_axis_range_panel(preview, "opt")
         self._draw_optimization_placeholder()
 
     def _build_wrap_angle_tab(self, parent: ttk.Frame) -> None:
@@ -564,21 +901,17 @@ class MonitorAnalyzerApp:
         )
 
     def _get_plot_options(self) -> PlotOptions:
-        def f(name: str) -> Optional[float]:
-            text = str(self._plot_limit_vars[name].get()).strip()
-            if text == "" or text.lower() == "auto":
-                return None
-            return float(text)
-
+        axis_ranges = self._axis_ranges_from_state("plot")
         options = PlotOptions(
-            tension_y_min=f("tension_y_min"),
-            tension_y_max=f("tension_y_max"),
-            high_tension_y_min=f("high_tension_y_min"),
-            high_tension_y_max=f("high_tension_y_max"),
-            low_tension_y_min=f("low_tension_y_min"),
-            low_tension_y_max=f("low_tension_y_max"),
-            mu_y_min=f("mu_y_min"),
-            mu_y_max=f("mu_y_max"),
+            axis_ranges=axis_ranges,
+            tension_y_min=axis_ranges["tension"].y_min,
+            tension_y_max=axis_ranges["tension"].y_max,
+            high_tension_y_min=axis_ranges["high"].y_min,
+            high_tension_y_max=axis_ranges["high"].y_max,
+            low_tension_y_min=axis_ranges["low"].y_min,
+            low_tension_y_max=axis_ranges["low"].y_max,
+            mu_y_min=axis_ranges["mu"].y_min,
+            mu_y_max=axis_ranges["mu"].y_max,
             show_mu=bool(self._plot_bool_vars["show_mu"].get()),
             show_stable_segments=bool(self._plot_bool_vars["show_stable_segments"].get()),
             show_mu_ss=bool(self._plot_bool_vars["show_mu_ss"].get()),
@@ -602,6 +935,8 @@ class MonitorAnalyzerApp:
             sample_rate_hz=float(self.opt_sample_rate_var.get().strip()),
             hampel_strength_pct=float(self.opt_hampel_strength_var.get()),
             smooth_strength_pct=float(self.opt_smooth_strength_var.get()),
+            quantile_max_run_s=float(self.opt_quantile_max_run_var.get().strip()),
+            quantile_segment_s=float(self.opt_quantile_segment_var.get().strip()),
         ).normalized()
 
     def _current_optimization_signature(self) -> Tuple[str, str]:
@@ -808,6 +1143,8 @@ class MonitorAnalyzerApp:
                     self._opt_params = params
                     self._opt_signature = (os.path.abspath(data.db_path), data.table_name)
                     self.opt_preview_mode_var.set("高张力")
+                    self._active_axis_range_key["opt"] = "high"
+                    self._load_visible_axis_range("opt")
                     self._draw_optimization_preview(data, optimized)
                     self.opt_status_var.set(
                         f"预览完成: rows={data.row_count} | θ={params.wrap_angle_rad:.12g} rad | "
@@ -863,7 +1200,7 @@ class MonitorAnalyzerApp:
         try:
             self._update_plots(self._last_data, self._last_result)
         except Exception as exc:
-            messagebox.showerror("绘图参数错误", str(exc))
+            self._show_range_error("plot", exc)
 
     def _export_plots(self) -> None:
         if self._last_data is None or self._last_result is None or self._last_params is None:
@@ -891,6 +1228,34 @@ class MonitorAnalyzerApp:
             messagebox.showerror("导出失败", traceback.format_exc())
             return
         self.status_var.set(f"图片已导出: {os.path.basename(out_dir)} | lang={lang}")
+        messagebox.showinfo("导出完成", "\n".join(outputs.values()))
+
+    def _export_optimization_preview_plots(self) -> None:
+        if self._opt_source_data is None or self._opt_data is None:
+            messagebox.showwarning("提示", "请先生成优化预览，再导出对比图。")
+            return
+        export_items = [key for key, var in self._opt_export_bool_vars.items() if bool(var.get())]
+        if not export_items:
+            messagebox.showwarning("提示", "请至少选择一项优化对比图导出内容。")
+            return
+        out_dir = filedialog.askdirectory(title="选择优化对比图导出目录")
+        if not out_dir:
+            return
+        lang = "en" if self.opt_export_lang_var.get().strip().lower().startswith("english") else "zh"
+        try:
+            outputs = export_optimization_plots(
+                self._opt_source_data,
+                self._opt_data,
+                out_dir,
+                lang=lang,
+                export_items=export_items,
+                axis_ranges=self._axis_ranges_from_state("opt"),
+                max_points=40000,
+            )
+        except Exception:
+            messagebox.showerror("导出失败", traceback.format_exc())
+            return
+        self.opt_status_var.set(f"优化对比图已导出: {os.path.basename(out_dir)} | lang={lang}")
         messagebox.showinfo("导出完成", "\n".join(outputs.values()))
 
     def _export_optimized_db(self) -> None:
@@ -988,10 +1353,13 @@ class MonitorAnalyzerApp:
         self.opt_preview_canvas.draw_idle()
 
     def _refresh_optimization_preview_plot(self) -> None:
-        if self._opt_source_data is None or self._opt_data is None:
-            self._draw_optimization_placeholder()
-            return
-        self._draw_optimization_preview(self._opt_source_data, self._opt_data)
+        try:
+            if self._opt_source_data is None or self._opt_data is None:
+                self._draw_optimization_placeholder()
+                return
+            self._draw_optimization_preview(self._opt_source_data, self._opt_data)
+        except Exception as exc:
+            self._show_range_error("opt", exc)
 
     def _draw_optimization_preview(self, data: MonitorData, optimized: OptimizedData) -> None:
         mode = self.opt_preview_mode_var.get().strip() or "高张力"
@@ -1083,48 +1451,35 @@ class MonitorAnalyzerApp:
         self.opt_ax_preview.set_title(text["title"])
         self.opt_ax_preview.set_ylabel(text["ylabel"])
         self.opt_ax_preview.set_xlabel(text["xlabel"])
-        self.opt_figure.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.10)
+        self.opt_figure.tight_layout(rect=[0, 0.02, 1, 1])
+        self._sync_axis_range_controls_from_axis("opt", text["key"], self.opt_ax_preview)
         self.opt_preview_canvas.draw_idle()
 
     def _refresh_optimization_preview_plot(self) -> None:
-        if self._opt_source_data is None or self._opt_data is None:
-            self._draw_optimization_placeholder()
-            return
-        self._draw_optimization_preview(self._opt_source_data, self._opt_data)
+        try:
+            if self._opt_source_data is None or self._opt_data is None:
+                self._draw_optimization_placeholder()
+                return
+            self._draw_optimization_preview(self._opt_source_data, self._opt_data)
+        except Exception as exc:
+            self._show_range_error("opt", exc)
 
     def _draw_optimization_preview(self, data: MonitorData, optimized: OptimizedData) -> None:
         text = self._optimization_preview_text(self.opt_preview_mode_var.get().strip())
         max_points = 40000
-        q_from_db = np.asarray(data.quality_flag, dtype=int) != 0
-        display_high = interpolate_invalid_samples(data.t_high_N, q_from_db)
-        display_low = interpolate_invalid_samples(data.t_low_N, q_from_db)
-        display_avg = (display_high + display_low) / 2.0
-        display_mu = interpolate_invalid_samples(data.mu, q_from_db)
-
-        tx, raw_high = downsample_for_plot(data.t_s, display_high, max_points)
-        _, opt_high = downsample_for_plot(data.t_s, optimized.t_high_N, max_points)
-        _, raw_low = downsample_for_plot(data.t_s, display_low, max_points)
-        _, opt_low = downsample_for_plot(data.t_s, optimized.t_low_N, max_points)
-        _, raw_avg = downsample_for_plot(data.t_s, display_avg, max_points)
-        _, opt_avg = downsample_for_plot(data.t_s, optimized.t_avg_N, max_points)
-        _, raw_mu = downsample_for_plot(data.t_s, display_mu, max_points)
-        _, opt_mu = downsample_for_plot(data.t_s, optimized.mu, max_points)
-
-        series = {
-            "high": (raw_high, opt_high),
-            "low": (raw_low, opt_low),
-            "avg": (raw_avg, opt_avg),
-            "mu": (raw_mu, opt_mu),
-        }
-        raw_y, opt_y = series[text["key"]]
-        self.opt_ax_preview.clear()
-        self.opt_ax_preview.plot(tx, raw_y, label=text["before"], color="tab:blue", alpha=0.55)
-        self.opt_ax_preview.plot(tx, opt_y, label=text["after"], color="tab:red", linewidth=1.0)
-        self.opt_ax_preview.set_title(text["title"])
-        self.opt_ax_preview.set_ylabel(text["ylabel"])
-        self.opt_ax_preview.set_xlabel(text["xlabel"])
-        self.opt_ax_preview.legend(loc="upper right")
-        self.opt_figure.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.10)
+        axis_ranges = self._axis_ranges_from_state("opt")
+        plot_optimization_comparison_axis(
+            self.opt_ax_preview,
+            data,
+            optimized,
+            text["key"],
+            max_points,
+            self._preview_lang_code(self.opt_preview_lang_var),
+            axis_ranges.get(text["key"]),
+        )
+        self.opt_figure.tight_layout(rect=[0, 0.02, 1, 1])
+        self._sync_axis_range_controls_from_axis("opt", text["key"], self.opt_ax_preview)
+        self._clear_range_error("opt")
         self.opt_preview_canvas.draw_idle()
 
     def _wrap_preview_text(self) -> Dict[str, str]:
@@ -1181,19 +1536,15 @@ class MonitorAnalyzerApp:
         return "tension"
 
     def _apply_plot_preview_tension_limits(self, options: PlotOptions, kind: str) -> None:
-        if kind == "high":
-            lo = options.high_tension_y_min
-            hi = options.high_tension_y_max
-        elif kind == "low":
-            lo = options.low_tension_y_min
-            hi = options.low_tension_y_max
-        else:
-            lo = options.tension_y_min
-            hi = options.tension_y_max
-        if lo is None and hi is None:
+        axis_range = options.axis_ranges.get(kind)
+        if axis_range is None:
             return
-        current_lo, current_hi = self.ax_plot_preview.get_ylim()
-        self.ax_plot_preview.set_ylim(current_lo if lo is None else lo, current_hi if hi is None else hi)
+        if axis_range.x_min is not None or axis_range.x_max is not None:
+            current_lo, current_hi = self.ax_plot_preview.get_xlim()
+            self.ax_plot_preview.set_xlim(current_lo if axis_range.x_min is None else axis_range.x_min, current_hi if axis_range.x_max is None else axis_range.x_max)
+        if axis_range.y_min is not None or axis_range.y_max is not None:
+            current_lo, current_hi = self.ax_plot_preview.get_ylim()
+            self.ax_plot_preview.set_ylim(current_lo if axis_range.y_min is None else axis_range.y_min, current_hi if axis_range.y_max is None else axis_range.y_max)
 
     def _plot_single_tension_preview(
         self,
@@ -1238,6 +1589,8 @@ class MonitorAnalyzerApp:
             plot_tension_axis(self.ax_plot_preview, data, result, max_points, labels, options)
             self.ax_plot_preview.set_xlabel(labels["t"])
             self.figure.tight_layout(rect=[0, 0.12, 1, 1])
+        self._sync_axis_range_controls_from_axis("plot", kind, self.ax_plot_preview)
+        self._clear_range_error("plot")
         self.canvas.draw_idle()
         self.root.after_idle(self._on_body_configure)
 
@@ -1262,6 +1615,7 @@ class MonitorAnalyzerApp:
             self.ax_plot_preview.set_ylabel(labels["tension"])
         self.ax_plot_preview.set_xlabel(labels["t"])
         self.figure.tight_layout()
+        self._sync_axis_range_controls_from_axis("plot", kind, self.ax_plot_preview)
         self.canvas.draw_idle()
 
 
