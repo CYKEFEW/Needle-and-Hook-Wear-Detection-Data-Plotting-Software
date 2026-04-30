@@ -30,6 +30,7 @@ a = Analysis(
     datas=[
         ('database', 'database'),
         ('README.md', '.'),
+        ('requirements.txt', '.'),
     ],
     hiddenimports=local_hiddenimports,
     hookspath=[],
