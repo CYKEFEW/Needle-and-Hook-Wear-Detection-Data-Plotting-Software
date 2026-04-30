@@ -371,14 +371,12 @@ class MonitorAnalyzerApp:
 
         export_box = ttk.LabelFrame(controls, text="导出", padding=10)
         export_box.pack(fill=tk.X, pady=(0, 10))
-        ttk.Label(export_box, text="输出数据库").grid(row=0, column=0, sticky="w")
-        ttk.Entry(export_box, textvariable=self.opt_output_path_var, width=48).grid(row=1, column=0, sticky="ew", pady=(4, 6))
-        ttk.Button(export_box, text="另存为...", command=self._browse_opt_output).grid(row=1, column=1, padx=(8, 0))
         self.opt_preview_btn = ttk.Button(export_box, text="生成优化预览", command=self._run_optimization_preview_async)
-        self.opt_preview_btn.grid(row=2, column=0, sticky="w", pady=(4, 0))
+        self.opt_preview_btn.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         self.opt_export_btn = ttk.Button(export_box, text="导出优化后的db", command=self._export_optimized_db)
-        self.opt_export_btn.grid(row=2, column=1, sticky="e", pady=(4, 0))
+        self.opt_export_btn.grid(row=0, column=1, sticky="ew")
         export_box.columnconfigure(0, weight=1)
+        export_box.columnconfigure(1, weight=1)
 
         status_box = ttk.LabelFrame(controls, text="优化摘要", padding=10)
         status_box.pack(fill=tk.BOTH, expand=True)
